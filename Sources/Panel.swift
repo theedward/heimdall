@@ -127,10 +127,10 @@ struct BeaconPanel: View {
                 }.toggleStyle(FluidToggle())
             }
             Button(action: model.storageAction) {
-                HStack { Image(systemName: "internaldrive"); Text("Open Storage Settings"); Spacer(); Image(systemName: "arrow.up.right").font(.system(size: 10,weight: .semibold)) }
+                HStack { Image(systemName: "internaldrive"); Text("Review & free up space"); Spacer(); Image(systemName: "arrow.up.right").font(.system(size: 10,weight: .semibold)) }
                     .font(.system(size: 13,weight: .medium)).padding(.horizontal,14).frame(height: 42)
                     .background(surface,in: RoundedRectangle(cornerRadius: 11)).overlay(RoundedRectangle(cornerRadius: 11).stroke(border,lineWidth: 1))
-            }.buttonStyle(FluidPress())
+            }.buttonStyle(FluidPress()).help("Open Apple’s cleanup recommendations and large-file review in Storage settings")
             HStack {
                 Text("Updated \(model.updated,style: .time)").font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()

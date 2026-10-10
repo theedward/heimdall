@@ -5,7 +5,7 @@ A tiny native macOS menu bar app showing internal disk occupancy and available s
 - Refreshes every 30 seconds, on wake, and when opening the menu.
 - Neutral when there is room, amber when space is getting tight, red when critical.
 - Adjustable presets: relaxed (30/10 GB), balanced (60/25 GB, default), early warning (100/50 GB).
-- A fluid functionalism panel shows exact space figures, refresh, Storage Settings, and launch at login.
+- A fluid functionalism panel shows exact space figures, refresh, a **Review & free up space** shortcut to Apple’s Storage cleanup recommendations, and launch at login.
 - System light/dark appearance, neutral normal usage, accessible state labels and reduced-motion-aware spring feedback.
 - Local only. No network requests, analytics, notifications, or background scanning. No data leaves the app.
 
