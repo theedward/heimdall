@@ -1,0 +1,20 @@
+# Finder layout follows the same neutral surface hierarchy as Heimdall.
+app = defines['app']
+files = [app]
+symlinks = {'Applications': '/Applications'}
+format = 'UDZO'
+filesystem = 'HFS+'
+size = '40m'
+background = defines['background']
+window_rect = ((200, 160), (560, 360))
+default_view = 'icon-view'
+show_status_bar = False
+show_tab_view = False
+show_toolbar = False
+show_pathbar = False
+show_sidebar = False
+icon_size = 88
+text_size = 12
+label_pos = 'bottom'
+icon_locations = {'Heimdall.app': (146, 184), 'Applications': (420, 184)}
+include_icon_view_settings = True

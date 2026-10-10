@@ -155,7 +155,7 @@ struct BeaconPanel: View {
 func renderPreviews(to directory: String) {
     do {
         try FileManager.default.createDirectory(atPath: directory,withIntermediateDirectories: true)
-        let live = try DiskReading.read()
+        let live = DiskReading(total: 512_000_000_000,free: 128_000_000_000)
         for (name,free) in [("healthy",live.free),("warning",Int64(42_000_000_000)),("critical",Int64(18_000_000_000))] {
             for (theme,scheme) in [("light",ColorScheme.light),("dark",ColorScheme.dark)] {
                 let model = BeaconModel(); model.disk = DiskReading(total: live.total,free: free); model.login = true
@@ -191,7 +191,7 @@ func renderPreviews(to directory: String) {
                         }.frame(width: 360)
                     }
                 }
-                Text("Rendered from the app’s shared interface. Normal shows the current disk reading; warning and critical show example values.")
+                Text("Rendered from the app’s shared interface. All disk readings in these pictures are made-up examples.")
                     .font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal,4)
             }.padding(28).background(scheme == .dark ? Color(white: 0.09) : Color(white: 0.92)).environment(\.colorScheme,scheme)
             let renderer = ImageRenderer(content: presentation); renderer.scale = 2
