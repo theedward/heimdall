@@ -33,7 +33,7 @@ func background() {
     let arrow = NSImage(systemSymbolName: "arrow.right",accessibilityDescription: nil)!.withSymbolConfiguration(NSImage.SymbolConfiguration(pointSize: 26,weight: .regular).applying(NSImage.SymbolConfiguration(paletteColors: [NSColor(white: 0.5,alpha: 1)])))!
     arrow.draw(in: NSRect(x: 264,y: 147,width: 32,height: 24))
     text("Drag Heimdall into Applications",x: 162,y: 51,size: 14,weight: .medium,color: NSColor(white: 0.22,alpha: 1))
-    text("Then open it from Applications. Look for the disk in your menu bar.",x: 67,y: 26,size: 11)
+    text("Then open it from Applications. Look for usage in your menu bar.",x: 67,y: 26,size: 11)
 }
 try save("installer-background.png",560,360,draw: background)
 try save("installer-preview.png",1120,720) {

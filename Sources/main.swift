@@ -18,20 +18,6 @@ struct DiskReading {
 }
 
 
-func diskStatusIcon(color: NSColor, fraction: Double) -> NSImage {
-    let image = NSImage(size: NSSize(width: 22, height: 18), flipped: false) { _ in
-        let outline = NSBezierPath(roundedRect: NSRect(x: 1, y: 2, width: 20, height: 14), xRadius: 3, yRadius: 3)
-        color.setStroke(); outline.lineWidth = 1.5; outline.stroke()
-        color.withAlphaComponent(0.18).setFill()
-        NSBezierPath(roundedRect: NSRect(x: 4, y: 5, width: 14, height: 8), xRadius: 1, yRadius: 1).fill()
-        color.setFill()
-        NSBezierPath(roundedRect: NSRect(x: 4, y: 5, width: max(1, 14 * fraction), height: 8), xRadius: 1, yRadius: 1).fill()
-        return true
-    }
-    image.isTemplate = false
-    return image
-}
-
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private var status: NSStatusItem!
     private let model = BeaconModel()
@@ -83,18 +69,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
             let disk = try DiskReading.read()
             model.disk = disk; model.updated = Date(); model.error = false
             let freeGB = Double(disk.free) / 1e9
-            let color: NSColor = freeGB < Double(model.critical) ? .systemRed : freeGB < Double(model.warning) ? .systemOrange : .secondaryLabelColor
+            let color: NSColor = freeGB < Double(model.critical) ? .systemRed : freeGB < Double(model.warning) ? .systemOrange : .labelColor
             let percent = Int((disk.fraction * 100).rounded())
-            status.button?.title = " \(percent)% · \(Int(freeGB.rounded(.down))) GB"
-            status.button?.font = .monospacedDigitSystemFont(ofSize: 12, weight: .medium)
-            status.button?.image = diskStatusIcon(color: color, fraction: disk.fraction)
-            status.button?.imagePosition = .imageLeading
+            status.button?.attributedTitle = NSAttributedString(
+                string: "\(percent)% · \(Int(freeGB.rounded(.down))) GB",
+                attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium), .foregroundColor: color]
+            )
+            status.button?.image = nil
             status.button?.toolTip = "Internal disk: \(percent)% occupied, \(String(format: "%.1f", freeGB)) GB free · \(model.state)"
             status.button?.setAccessibilityLabel(status.button?.toolTip)
         } catch {
             model.error = true
-            status.button?.title = " Disk ?"
-            status.button?.image = diskStatusIcon(color: .systemGray, fraction: 0)
+            status.button?.attributedTitle = NSAttributedString(
+                string: "Disk ?", attributes: [.font: NSFont.monospacedDigitSystemFont(ofSize: 12, weight: .medium), .foregroundColor: NSColor.secondaryLabelColor]
+            )
+            status.button?.image = nil
             status.button?.toolTip = "Unable to read internal disk usage"
         }
     }

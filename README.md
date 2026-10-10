@@ -2,16 +2,16 @@
 
 A tiny native macOS menu bar app that keeps a quiet watch on your internal disk. See occupancy and available space at a glance: **75% · 128 GB**. Click the menu bar item to open its fluid functionalism panel.
 
-Normal readings stay neutral. Amber means space is getting tight; red means it is critical. Text labels make every state clear without relying on color.
+The menu bar uses text only, without a redundant usage icon. Normal readings stay neutral. Amber means space is getting tight; red means it is critical. Text labels make every state clear without relying on color.
 
 ## Download and install
 
 Requires **macOS 13 or later**. The universal download supports **Apple Silicon and Intel** Macs.
 
-1. Download **Heimdall-1.1.0-universal.dmg** from the [latest release](https://github.com/theedward/heimdall/releases/latest).
+1. Download **Heimdall-1.1.1-universal.dmg** from the [latest release](https://github.com/theedward/heimdall/releases/latest).
 2. Open the disk image and **drag Heimdall into Applications**.
 3. Eject the disk image, then open **Heimdall** from Applications.
-4. Click the disk indicator in your menu bar. Optionally turn on **Launch at login**.
+4. Click the usage readout in your menu bar. Optionally turn on **Launch at login**.
 
 ![Drag Heimdall into Applications](docs/previews/installer.png)
 

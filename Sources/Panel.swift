@@ -182,9 +182,9 @@ func renderPreviews(to directory: String) {
                             HStack(spacing: 8) {
                                 Text(index == 0 ? "NORMAL" : index == 1 ? "WARNING" : "CRITICAL").font(.system(size: 10,weight: .semibold)).tracking(1).foregroundStyle(.secondary)
                                 Spacer()
-                                Image(nsImage: diskStatusIcon(color: NSColor(model.tint),fraction: model.fraction))
                                 Text("\(Int((model.fraction * 100).rounded()))% · \(Int(model.freeGB.rounded(.down))) GB")
                                     .font(.system(size: 12,weight: .medium)).monospacedDigit()
+                                    .foregroundStyle(index == 0 ? Color.primary : model.tint)
                             }.padding(.horizontal,8).frame(height: 30)
                             BeaconPanel(model: model).clipShape(RoundedRectangle(cornerRadius: 18))
                                 .overlay(RoundedRectangle(cornerRadius: 18).stroke(Color.primary.opacity(0.07),lineWidth: 1))

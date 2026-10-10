@@ -6,7 +6,7 @@ The panel uses neutral nested surfaces, fine borders, quiet shadows, and a free-
 
 The warning preset selector uses a raised selection surface. Press feedback compresses subtly and reverses with spring motion. Reduce Motion removes scaling and spring feedback. Hover/tooltips and keyboard focus use native macOS behavior. The launch-at-login switch is rendered in SwiftUI, using the same implementation in the app and previews.
 
-Pictures are rendered from the actual shared SwiftUI panel and menu bar icon, not drawn mockups. Normal (128 GB free), warning (42 GB free) and critical (18 GB free) all use generated readings to illustrate states without filling the disk. They are visual examples, not evidence that the disk has those free-space values.
+Pictures are rendered from the actual shared SwiftUI panel and menu bar text, not drawn mockups. Normal (128 GB free), warning (42 GB free) and critical (18 GB free) all use generated readings to illustrate states without filling the disk. They are visual examples, not evidence that the disk has those free-space values.
 
 ![Light appearance and states](previews/overview-light.png)
 ![Dark appearance and states](previews/overview-dark.png)
@@ -17,3 +17,5 @@ Regenerate with:
 ./build.sh
 "build/Heimdall.app/Contents/MacOS/Heimdall" --render docs/previews
 ```
+
+The menu bar shows only percentage and free-space text. Normal text uses the native label color; amber and red mark warning and critical readings. The redundant occupancy rectangle has been removed. The user confirmed the cleanup shortcut reaches the intended macOS page.
