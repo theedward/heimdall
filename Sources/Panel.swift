@@ -15,7 +15,7 @@ final class BeaconModel: ObservableObject {
     @Published var alerts = false
     @Published var alertNote = "One alert per worsening threshold · all listed disks"
     @Published var checkingUpdate = false
-    @Published var updateNote = "Version 1.3.0 · checks only when clicked"
+    @Published var updateNote = "Version 1.4.0 · checks only when clicked"
     @Published var releaseURL: URL?
     var selectAction: (String) -> Void = { _ in }
     var alertAction: (Bool) -> Void = { _ in }
@@ -156,12 +156,12 @@ struct BeaconPanel: View {
                     }
                 }.toggleStyle(FluidToggle())
             }
-            if model.selectedID == "internal" {
+            if !model.disconnected {
                 Button(action: model.cleanupAction) {
                     HStack { Image(systemName: "sparkle.magnifyingglass"); Text("Scan & review cleanup"); Spacer(); Image(systemName: "arrow.up.right").font(.system(size: 10,weight: .semibold)) }
                         .font(.system(size: 13,weight: .medium)).padding(.horizontal,14).frame(height: 42)
                         .background(surface,in: RoundedRectangle(cornerRadius: 11)).overlay(RoundedRectangle(cornerRadius: 11).stroke(border,lineWidth: 1))
-                }.buttonStyle(FluidPress()).help("Scan old installers, logs and inactive Xcode build data. Review every removal first.")
+                }.buttonStyle(FluidPress()).help("Review cleanup, developer tools, large files and applications across accessible locations.")
             }
             Button(action: model.storageAction) {
                 HStack { Image(systemName: "internaldrive"); Text(model.selectedID == "internal" ? "Review & free up space" : "Open disk in Finder"); Spacer(); Image(systemName: "arrow.up.right").font(.system(size: 10,weight: .semibold)) }
@@ -259,6 +259,7 @@ func renderPreviews(to directory: String) {
             try data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("overview-\(theme).png"))
         }
         try renderCleanupPreviews(to: directory)
+        try renderStoragePreviews(to: directory)
         print("Rendered shared app UI to \(directory). All readings use example values.")
     } catch { fputs("Preview failed: \(error)\n",stderr); exit(1) }
 }

@@ -131,3 +131,112 @@ let misleadingLog = try fixtureFile("Library/Logs/app/important.log.json")
 expect(cleaner.scan().candidates.contains { $0.url.path == rotatedLog.path },"Numbered rotated log included")
 expect(!cleaner.scan().candidates.contains { $0.url.path == misleadingLog.path },"A log-like name does not make JSON configuration eligible")
 print("Passed \(checks) total checks.")
+
+// General storage behavior is tested on a Mac-shaped fixture, with no external drive.
+let genericHome = fixture.appendingPathComponent("GenericHome")
+try FileManager.default.createDirectory(at: genericHome,withIntermediateDirectories: true)
+func storageFile(_ relative: String,_ bytes: Int = 2048) throws -> URL {
+    let url = genericHome.appendingPathComponent(relative)
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),withIntermediateDirectories: true)
+    try Data(repeating: 17,count: bytes).write(to: url)
+    return url
+}
+let largeArchive = try storageFile("Downloads/valuable-library.zip")
+_ = try storageFile(".npm/_cacache/content-v2/cache")
+_ = try storageFile("Library/Caches/Homebrew/downloads/bottle")
+_ = try storageFile("Library/Caches/org.swift.swiftpm/repositories/cache")
+_ = try storageFile(".gradle/caches/modules-2/dependency")
+_ = try storageFile("Library/Caches/JetBrains/ExampleIDE/cache")
+_ = try storageFile("Applications/Example.app/Contents/binary")
+_ = try storageFile("Applications/Unity/Hub/Editor/ExampleVersion/Unity.app/Contents/binary")
+_ = try storageFile("Documents/Project/.git/objects/object")
+let extraRoot = fixture.appendingPathComponent("AnyChosenLocation")
+try FileManager.default.createDirectory(at: extraRoot,withIntermediateDirectories: true)
+let extraFile = extraRoot.appendingPathComponent("movie.mp4")
+try Data(repeating: 55,count: 2048).write(to: extraFile)
+var inventoryScanner = StorageScanner(home: genericHome,applicationRoots: [genericHome.appendingPathComponent("Applications")],additionalRoots: [extraRoot],minimumLargeBytes: 128,minimumAppBytes: 128,minimumCacheBytes: 128)
+var inventory = inventoryScanner.scan()
+expect(inventory.items.contains { $0.url.path == largeArchive.path && $0.category == .downloads },"Large archive is offered for relocation, not classified as disposable")
+expect(inventory.items.contains { $0.url.path == extraFile.path },"User-selected location works without an external SSD")
+expect(inventory.items.contains { $0.name == "Gradle cache" },"Gradle cache discovered")
+expect(inventory.items.contains { $0.name.hasPrefix("JetBrains:") },"JetBrains cache discovered")
+expect(inventory.items.contains { $0.name == "Unity editor ExampleVersion" },"Unity editor version discovered")
+expect(inventory.items.contains { $0.name == "Example" && $0.category == .applications },"Installed app inventoried without claiming unused")
+expect(inventory.items.contains { $0.name == "Project" && $0.category == .folders },"Large source project is review-only inventory")
+let cacheWithoutTool = inventory.items.first { $0.name == "npm cache" }!
+if case .reveal = cacheWithoutTool.action { expect(true,"Missing tool falls back to Finder review") } else { expect(false,"Missing tool must not expose a cleanup command") }
+let runtimeJSON = Data("""
+{"12345678-1234-1234-1234-123456789ABC":{"runtimeBundlePath":"/Library/Developer/Example.simruntime","version":"1.0","sizeBytes":8000000000,"platformIdentifier":"com.apple.platform.example","lastUsedAt":"2026-01-01T00:00:00Z"}}
+""".utf8)
+let runtimeItems = try StorageScanner.simulatorItems(runtimeJSON)
+expect(runtimeItems.count == 1 && runtimeItems[0].bytes == 8_000_000_000,"Simulator metadata preserves reported size")
+expect(runtimeItems[0].explanation.contains("Last used:"),"Last-use evidence displayed without guessing inactivity")
+expect((try? StorageScanner.simulatorItems(Data("[]".utf8))) == nil,"Unknown runtime JSON format rejected")
+inventoryScanner.tools = ToolDiscovery(npm: URL(fileURLWithPath: "/usr/bin/true"),homebrew: nil,swift: URL(fileURLWithPath: "/usr/bin/true"))
+inventoryScanner.simulatorInventory = { runtimeJSON }
+inventory = inventoryScanner.scan()
+expect(inventory.items.contains { $0.name.contains("runtime") },"Installed simulator inventory integrated")
+let npmItem = inventory.items.first { $0.name == "npm cache" }!
+if case .cache(.npm,_) = npmItem.action { expect(true,"Installed tool enables tool-supported cache action") } else { expect(false,"Tool action missing") }
+let oddCache = URL(fileURLWithPath: genericHome.appendingPathComponent("cache with spaces;$(touch no)").path)
+let npmPlan = ToolCleanupPlan(tool: .npm,executable: URL(fileURLWithPath: "/usr/bin/true"),cache: oddCache)
+expect(npmPlan.command()!.arguments == ["cache","clean","--force","--cache",oddCache.path],"Cache path is one structured argument, never shell code")
+expect(npmPlan.command(dryRun: true) == nil,"npm does not invent a dry-run")
+let brewPlan = ToolCleanupPlan(tool: .homebrew,executable: URL(fileURLWithPath: "/usr/bin/true"),cache: oddCache)
+expect(brewPlan.command(dryRun: true)!.arguments.contains("--dry-run"),"Homebrew preview uses the supported dry-run")
+expect(brewPlan.command()!.environment["HOMEBREW_CACHE"] == oddCache.path,"Homebrew cleanup scoped to reviewed cache location")
+expect(!brewPlan.command()!.arguments.contains("--prune=all"),"Homebrew uses age retention, not blanket pruning")
+let swiftPlan = ToolCleanupPlan(tool: .swift,executable: URL(fileURLWithPath: "/usr/bin/xcrun"),cache: oddCache)
+expect(swiftPlan.command()!.arguments == ["swift","package","--cache-path",oddCache.path,"purge-cache"],"Swift repository purge keeps project reset out of scope")
+let smallOutput = try ToolRunner().run(ToolCommand(executable: URL(fileURLWithPath: "/usr/bin/printf"),arguments: ["fixture-output"],environment: [:]))
+expect(smallOutput.status == 0 && smallOutput.text == "fixture-output","Tool runner captures process output")
+let truncatedOutput = try ToolRunner(maximumOutputBytes: 4).run(ToolCommand(executable: URL(fileURLWithPath: "/usr/bin/printf"),arguments: ["long-output"],environment: [:]))
+expect(truncatedOutput.truncated && truncatedOutput.text.count == 4,"Tool preview output has a bound")
+expect((try? ToolRunner(timeout: 0.05).run(ToolCommand(executable: URL(fileURLWithPath: "/bin/sleep"),arguments: ["1"],environment: [:]))) == nil,"Tool runner enforces a timeout")
+let moveItem = inventory.items.first { $0.url.path == largeArchive.path }!
+let destination = fixture.appendingPathComponent("ChosenDestination")
+try FileManager.default.createDirectory(at: destination,withIntermediateDirectories: true)
+var relocator = FileRelocator(allowedRoots: [genericHome.appendingPathComponent("Downloads")],freeBytes: { _ in 10_000_000_000 })
+expect((try? relocator.relocate(moveItem,to: genericHome.appendingPathComponent("Downloads"),trash: { _ in })) == nil,"Same folder is not a relocation destination")
+relocator.freeBytes = { _ in 0 }
+expect((try? relocator.relocate(moveItem,to: destination,trash: { _ in })) == nil,"Insufficient destination space leaves source intact")
+expect(FileManager.default.fileExists(atPath: largeArchive.path),"Original survives failed relocation")
+relocator.freeBytes = { _ in 10_000_000_000 }
+let collision = destination.appendingPathComponent(largeArchive.lastPathComponent)
+try Data("keep me".utf8).write(to: collision)
+expect((try? relocator.relocate(moveItem,to: destination,trash: { _ in })) == nil,"Relocation refuses destination collision")
+expect((try? Data(contentsOf: collision)) == Data("keep me".utf8),"Existing destination is never overwritten")
+try FileManager.default.removeItem(at: collision)
+var unauthorized = relocator
+unauthorized = FileRelocator(allowedRoots: [],freeBytes: { _ in 10_000_000_000 })
+expect((try? unauthorized.relocate(moveItem,to: destination,trash: { _ in })) == nil,"Relocation requires an approved scan root")
+let movedResult = try relocator.relocate(moveItem,to: destination) { source in try FileManager.default.moveItem(at: source,to: fakeTrash.appendingPathComponent(source.lastPathComponent)) }
+expect(movedResult.sameVolume,"An internal same-volume destination is recognized")
+expect((try? Data(contentsOf: movedResult.destination)) == Data(repeating: 17,count: 2048),"Relocated copy has verified original bytes")
+expect(FileManager.default.fileExists(atPath: fakeTrash.appendingPathComponent(largeArchive.lastPathComponent).path),"Original remains recoverable in injected Trash")
+let retainedSource = try storageFile("Downloads/retain.zip")
+let retainedItem = inventoryScanner.scan().items.first { $0.url.path == retainedSource.path }!
+expect((try? relocator.relocate(retainedItem,to: destination,trash: { _ in throw StorageFailure.changed })) == nil,"Failure to trash original is reported")
+expect(FileManager.default.fileExists(atPath: retainedSource.path) && FileManager.default.fileExists(atPath: destination.appendingPathComponent("retain.zip").path),"Both verified copy and original are kept when Trash fails")
+let changedSource = try storageFile("Downloads/changed.zip")
+let changedItem = inventoryScanner.scan().items.first { $0.url.path == changedSource.path }!
+try Data(repeating: 99,count: 4096).write(to: changedSource)
+expect((try? relocator.relocate(changedItem,to: destination,trash: { _ in })) == nil,"Changed source cannot be relocated from a stale review")
+var partialScanner = inventoryScanner; partialScanner.maximumEntries = 1
+expect(partialScanner.measure(genericHome.appendingPathComponent("Documents/Project")).incomplete,"Large folder inventory reports partial measurements")
+let emptyHome = fixture.appendingPathComponent("EmptyHome")
+try FileManager.default.createDirectory(at: emptyHome,withIntermediateDirectories: true)
+expect(StorageScanner(home: emptyHome,applicationRoots: []).scan().items.isEmpty,"Mac with no tools or matching files has an empty inventory")
+print("Passed \(checks) total checks, including generic inventory, missing tools, structured commands, runtime evidence and verified relocation.")
+
+expect(FileRelocator.isSameVolume(moveItem,destination: destination) == true,"Destination volume check works independently of directory ownership")
+let configuredCache = fixture.appendingPathComponent("CustomCache")
+try FileManager.default.createDirectory(at: configuredCache,withIntermediateDirectories: true)
+try Data(repeating: 3,count: 2048).write(to: configuredCache.appendingPathComponent("entry"))
+inventoryScanner.reportedCacheLocations[.npm] = configuredCache
+expect(inventoryScanner.scan().items.contains { $0.url.path == configuredCache.path && $0.name == "npm configured cache" },"Tool-reported custom cache location is inventoried")
+let customApp = extraRoot.appendingPathComponent("Custom.app/Contents")
+try FileManager.default.createDirectory(at: customApp,withIntermediateDirectories: true)
+try Data(repeating: 3,count: 2048).write(to: customApp.appendingPathComponent("binary"))
+expect(inventoryScanner.scan().items.contains { $0.name == "Custom" && $0.category == .applications },"Apps in user-chosen locations are discovered")
+print("Passed \(checks) total checks.")

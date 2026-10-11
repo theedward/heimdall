@@ -8,7 +8,7 @@ The menu bar uses text only, without a redundant usage icon. Normal readings sta
 
 Requires **macOS 13 or later**. The universal download supports **Apple Silicon and Intel** Macs.
 
-1. Download **Heimdall-1.3.0-universal.dmg** from the [latest release](https://github.com/theedward/heimdall/releases/latest).
+1. Download **Heimdall-1.4.0-universal.dmg** from the [latest release](https://github.com/theedward/heimdall/releases/latest).
 2. Open the disk image and **drag Heimdall into Applications**.
 3. Eject the disk image, then open **Heimdall** from Applications.
 4. Allow notifications when macOS asks if you want low-space banners. Click the menu bar readout to select a disk, adjust thresholds, or enable **Launch at login**.
@@ -49,17 +49,52 @@ The [design notes](docs/DESIGN.md) describe the fluid functionalism adaptation a
 
 ## Cleanup review
 
-Click **Scan & review cleanup** while the internal disk is selected, then **Scan user folders**. The scan runs only on demand and checks three explicit locations:
+Click **Scan & review cleanup**, then **Scan**. The window offers Cleanup, Developer tools, Large files, Applications, and Large folders. **Add folder** includes a custom location on any accessible volume; remove it to change the next scan. No external drive or particular folder layout is required. An empty category is a valid result, including on Macs without development tools.
+
+The Cleanup category checks three explicit locations:
 
 - `~/Downloads`: top-level regular `.dmg` and `.pkg` installers.
 - `~/Library/Logs`: regular `.log` files and numbered rotations.
 - `~/Library/Developer/Xcode/DerivedData`: inactive build folders, only while Xcode is closed.
 
-Candidates must total at least 1 MB and have no creation or modification within the last 30 days. Directories require every descendant to meet the age rule. Linked, protected, unreadable, oversized and source-control-containing build folders are skipped. Scans stop after 45 seconds or their entry limits and report incomplete results. Games, source projects, documents, archives, app data and general caches are outside these rules. Age alone does not mean you no longer need a file.
+Candidates must total at least 1 MB and have no creation or modification within the last 30 days. Directories require every descendant to meet the age rule. Linked, protected, unreadable, oversized and source-control-containing build folders are skipped. Scans stop after 60 seconds or their entry limits and report incomplete results. Games, source projects, documents, archives, app data and general caches are outside these Trash rules; the other categories can identify them for manual review. Age alone does not mean you no longer need a file.
 
 Every item starts **unchecked**. Review its reason, size and path; **Reveal** opens its location in Finder. Select items, click **Review & move to Trash**, and confirm the list. Before each move, Heimdall rechecks location, file identity, metadata, contents of build folders, and whether Xcode is running. Changed items are skipped. Errors are reported per item; the app does not permanently delete anything or empty Trash.
 
 **Moving to Trash does not free disk space.** Review and empty Trash in Finder when ready. Logical sizes are estimates; APFS shared storage and compression can change the actual space reclaimed. Finder can restore trashed items while they remain in Trash.
+
+### General storage opportunities
+
+| Category | Discovery | Reviewed action |
+| --- | --- | --- |
+| Developer tools | npm, Homebrew, SwiftPM, Gradle and JetBrains caches; Unity editor versions; simulator runtime metadata | Tool-supported purge, manager, or documented controls |
+| Large files | Regular files of at least 500 MB in Downloads and added locations, including valuable archives | Choose a destination, copy and verify, then move the original to Trash |
+| Applications | Apps of at least 100 MB in standard or added locations | Review in Finder or use the publisher's uninstaller |
+| Large folders | Folders in common personal and app-data locations, plus added locations | Review in Finder; use the owning app's supported relocation method |
+
+Installed and large do **not** mean unused. Runtime last-use metadata is shown when supplied by `simctl`; app/editor usage is explicitly unknown. Folder sizes may be partial because of entry limits or access restrictions. Sizes overlap across categories and must not be added up as guaranteed reclaimable space. Protected and inaccessible locations are reported without requesting full-disk or administrator access.
+
+Cache discovery includes typical locations and custom npm/Homebrew cache locations reported by their installed tools. If a tool is absent, its leftover cache can still be revealed in Finder. Custom installations can be inspected using **Add folder**.
+
+- npm uses its [supported cache purge](https://docs.npmjs.com/cli/v11/commands/npm-cache), with the scanned cache path passed as a separate argument. There is no dry-run; its permanent cache purge requires explicit confirmation.
+- SwiftPM uses `swift package --cache-path <path> purge-cache`, from an empty temporary working directory. It purges the global repository cache, not source projects; Xcode must be closed. Reclaimed space can be smaller than the measured folder.
+- Homebrew shows its [cleanup dry-run](https://docs.brew.sh/Manpage.html#cleanup-options-formulacask-), then rechecks it before running `cleanup --prune=30`. This can remove old installed formula versions as well as cache downloads. A changed or truncated preview prevents execution.
+- [Gradle retention](https://docs.gradle.org/current/userguide/directory_layout.html) and [JetBrains leftover directories](https://www.jetbrains.com/help/idea/directories-used-by-the-ide-to-store-settings-caches-plugins-and-logs.html) use their documented controls; IDE Local History is not swept away by Heimdall.
+- Editor/runtime removal is reviewed in [Unity Hub](https://docs.unity.com/en-us/hub/add-editor) or [Xcode settings](https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components). Heimdall opens the detected manager, or its guide when unavailable.
+
+Tool cleanup is permanent and may require dependency downloads later. The confirmation shows its exact scope and command; close active builds/installations before approving. The scan never executes cleanup commands. Tool timeouts and failures are reported; a failed cleanup may have made partial changes, so rescan before retrying.
+
+### Relocation without a drive assumption
+
+**Choose destination** opens a native folder picker. The destination can be another folder on the internal disk, a separate internal volume, external storage, or another accessible mounted volume. The destination must have room for the full logical file size plus a 256 MB margin. Existing files are never overwritten.
+
+Heimdall copies the regular file using Foundation, verifies its contents with SHA-256, rechecks source/destination identity and metadata, then moves the original to Trash. File metadata support depends on the destination filesystem. If verification or copying fails, the original stays in place. If moving the original to Trash fails, the verified destination copy and original are both retained and reported. Directories and managed libraries remain manual-review items.
+
+A same-volume relocation does not save space on that volume. Different APFS volumes in one container also share storage. Moving to separate storage can reclaim source space **after its Trash is emptied**. The confirmation explains this before copying.
+
+![General developer opportunities with fictional tools and sizes](docs/previews/storage-developer-light.png)
+
+![Relocation review with a fictional archive and no assumed destination disk](docs/previews/storage-downloads-light.png)
 
 **Review recommended changes** shows proposed Heimdall settings before applying them: Launch at login on, notifications on (subject to macOS permission), and Balanced 60/25 GB thresholds. macOS storage settings are reviewed in their native screens rather than silently changed. Automatic 30-day Trash removal can erase files without another review; keep it off if you want approval before every permanent deletion.
 

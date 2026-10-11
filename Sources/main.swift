@@ -198,6 +198,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         syncNotificationPermission()
         syncCleanupSettings()
         cleanupModel.scanAction = { [weak self] in self?.scanCleanup() }
+        cleanupModel.addFolderAction = { [weak self] in self?.addScanFolder() }
+        cleanupModel.opportunityAction = { [weak self] item in self?.actOnOpportunity(item) }
         cleanupModel.trashAction = { [weak self] in self?.reviewTrash() }
         cleanupModel.recommendedAction = { [weak self] in self?.reviewRecommendedSettings() }
         cleanupModel.settingsAction = { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.settings.Storage")!) }
@@ -224,24 +226,164 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         cleanupCancellation?.cancel()
         let token = CleanupCancellation(); cleanupCancellation = token
         let generation = UUID(); cleanupGeneration = generation
-        cleanupModel.scanning = true; cleanupModel.selection = []; cleanupModel.candidates = []; cleanupModel.notes = []
+        cleanupModel.scanning = true; cleanupModel.selection = []; cleanupModel.candidates = []; cleanupModel.opportunities = []; cleanupModel.notes = []
         cleanupModel.status = "Scanning accessible user folders…"; cleanupModel.scanned = false
         let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
         let xcodeBusy = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.dt.Xcode" }
-        let deadline = Date().addingTimeInterval(45)
+        let additionalRoots = cleanupModel.additionalRoots
+        let deadline = Date().addingTimeInterval(60)
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var engine = CleanupEngine(home: home)
             engine.xcodeRunning = { xcodeBusy }
             engine.cancelled = { token.isCancelled || Date() > deadline }
             var result = engine.scan()
-            if Date() > deadline { result.notes.append("The scan reached its 45-second limit. Results may be incomplete.") }
+            var scanner = StorageScanner(home: home)
+            scanner.additionalRoots = additionalRoots
+            scanner.tools = ToolDiscovery.detect(home: home)
+            scanner.cancelled = { token.isCancelled || Date() > deadline }
+            for (kind,executable,arguments) in [(CacheTool.npm,scanner.tools.npm,["config","get","cache"]),(CacheTool.homebrew,scanner.tools.homebrew,["--cache"])] {
+                guard !scanner.cancelled(),let executable else { continue }
+                let command = ToolCommand(executable: executable,arguments: arguments,environment: ["HOMEBREW_NO_AUTO_UPDATE":"1","HOMEBREW_NO_ANALYTICS":"1"])
+                if let output = try? ToolRunner(timeout: 5).run(command),output.status == 0,!output.truncated,
+                   let path = output.text.split(separator: "\n").map(String.init).last(where: { $0.hasPrefix("/") }) {
+                    scanner.reportedCacheLocations[kind] = URL(fileURLWithPath: path)
+                }
+            }
+            scanner.simulatorInventory = {
+                let command = ToolCommand(executable: URL(fileURLWithPath: "/usr/bin/xcrun"),arguments: ["simctl","runtime","list","-j"],environment: [:])
+                let output = try ToolRunner(timeout: 8,maximumOutputBytes: 2_000_000).run(command)
+                guard output.status == 0,!output.truncated else { throw CleanupFailure.unsupported }
+                return Data(output.text.utf8)
+            }
+            let inventory = scanner.scan()
+            result.notes += inventory.notes
+            if Date() > deadline { result.notes.append("The scan reached its 60-second limit. Results may be incomplete.") }
             DispatchQueue.main.async {
                 guard let self,self.cleanupGeneration == generation,!token.isCancelled else { return }
                 self.cleanupModel.scanning = false; self.cleanupModel.scanned = true
-                self.cleanupModel.candidates = result.candidates; self.cleanupModel.notes = result.notes
-                self.cleanupModel.status = "\(result.candidates.count) candidates · \(CleanupModel.size(result.candidates.reduce(0) { $0 + $1.bytes })) to review. Nothing selected automatically."
+                self.cleanupModel.candidates = result.candidates; self.cleanupModel.opportunities = inventory.items; self.cleanupModel.notes = result.notes
+                self.cleanupModel.status = "\(result.candidates.count) cleanup candidates · \(inventory.items.count) storage items. Nothing selected automatically. Sizes can overlap across categories."
                 self.syncCleanupSettings()
             }
+        }
+    }
+    private func addScanFolder() {
+        guard !cleanupModel.busy else { return }
+        let picker = NSOpenPanel(); picker.canChooseFiles = false; picker.canChooseDirectories = true; picker.allowsMultipleSelection = true
+        picker.message = "Choose extra locations to inspect. Any accessible volume can be used; no files are changed by scanning."
+        picker.prompt = "Add locations"
+        guard picker.runModal() == .OK else { return }
+        for url in picker.urls {
+            if !cleanupModel.additionalRoots.contains(where: { $0.path == url.path }) { cleanupModel.additionalRoots.append(url) }
+        }
+        cleanupModel.status = "Locations added. Scan again to include them."
+    }
+    private func actOnOpportunity(_ item: StorageOpportunity) {
+        guard !cleanupModel.busy else { return }
+        switch item.action {
+        case .reveal: NSWorkspace.shared.activateFileViewerSelecting([item.url])
+        case .relocate: reviewRelocation(item)
+        case .cache(let kind,let executable): reviewToolCleanup(item,kind: kind,executable: executable)
+        case .manager(let manager):
+            let bundle: String?
+            let documentation: String
+            switch manager {
+            case .unity: bundle = "com.unity3d.unityhub"; documentation = "https://docs.unity.com/en-us/hub/add-editor"
+            case .xcode: bundle = "com.apple.dt.Xcode"; documentation = "https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components"
+            case .jetBrains: bundle = "com.jetbrains.toolbox"; documentation = "https://www.jetbrains.com/help/idea/directories-used-by-the-ide-to-store-settings-caches-plugins-and-logs.html"
+            case .gradle: bundle = nil; documentation = "https://docs.gradle.org/current/userguide/directory_layout.html"
+            }
+            let alert = NSAlert(); alert.messageText = "Review in the component’s manager"
+            alert.informativeText = item.explanation + "\n\nHeimdall has not determined that this component is unused. Removal is performed and confirmed in its manager."
+            alert.addButton(withTitle: bundle.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) } == nil ? "Open guide" : "Open manager")
+            alert.addButton(withTitle: "Cancel")
+            guard alert.runModal() == .alertFirstButtonReturn else { return }
+            if let bundle,let app = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundle) { NSWorkspace.shared.open(app) }
+            else if let url = URL(string: documentation) { NSWorkspace.shared.open(url) }
+        }
+    }
+    private func reviewToolCleanup(_ item: StorageOpportunity,kind: CacheTool,executable: URL) {
+        let plan = ToolCleanupPlan(tool: kind,executable: executable,cache: item.url)
+        guard let rootStamp = try? CleanupStamp.read(item.url),rootStamp.isDirectory,
+              item.url.resolvingSymlinksInPath().path == item.url.path,FileManager.default.isExecutableFile(atPath: executable.path) else {
+            cleanupModel.notes = ["Tool or cache location changed, is linked, or is unavailable. Scan again."]; return
+        }
+        if kind == .swift && NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == "com.apple.dt.Xcode" }) {
+            cleanupModel.notes = ["Close Xcode before purging Swift package caches."]; return
+        }
+        guard let command = plan.command() else { return }
+        cleanupModel.working = true; cleanupModel.status = "Preparing tool cleanup review…"
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var preview = "This tool does not provide a dry-run. You are reviewing a purge of the named recreatable cache."
+            do {
+                if let dryRun = plan.command(dryRun: true) {
+                    let result = try ToolRunner().run(dryRun)
+                    guard result.status == 0,!result.truncated else { throw CleanupFailure.unsupported }
+                    preview = result.text.isEmpty ? "Homebrew reports no cleanup items." : result.text
+                }
+                let text = preview
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    let alert = NSAlert(); alert.messageText = "Run \(kind.rawValue) cleanup?"
+                    alert.informativeText = plan.explanation + "\n\nClose active builds and installs first. Scope: \(item.url.path)\n\nCommand: \(command.display)"
+                    let scroll = NSScrollView(frame: NSRect(x: 0,y: 0,width: 560,height: 210)); scroll.hasVerticalScroller = true
+                    let view = NSTextView(frame: scroll.bounds); view.isEditable = false; view.isSelectable = true; view.font = .monospacedSystemFont(ofSize: 11,weight: .regular); view.string = text
+                    scroll.documentView = view; alert.accessoryView = scroll
+                    alert.addButton(withTitle: "Run cleanup"); alert.addButton(withTitle: "Cancel")
+                    guard alert.runModal() == .alertFirstButtonReturn else { self.cleanupModel.working = false; self.cleanupModel.status = "Tool cleanup cancelled. Nothing changed."; return }
+                    self.runToolCleanup(command,cache: item.url,stamp: rootStamp,plan: plan,expectedDryRun: kind == .homebrew ? text : nil)
+                }
+            } catch {
+                DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.notes = ["Couldn’t prepare the tool’s full dry-run: \(error.localizedDescription). No cleanup was run."] }
+            }
+        }
+    }
+    private func runToolCleanup(_ command: ToolCommand,cache: URL,stamp: CleanupStamp,plan: ToolCleanupPlan,expectedDryRun: String?) {
+        if plan.tool == .swift && NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == "com.apple.dt.Xcode" }) {
+            cleanupModel.working = false; cleanupModel.notes = ["Xcode started during review. Close it before purging Swift package caches."]; return
+        }
+        cleanupModel.status = "Running approved tool cleanup…"
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var message: String
+            do {
+                let current = try CleanupStamp.read(cache)
+                guard current.inode == stamp.inode,current.device == stamp.device,cache.resolvingSymlinksInPath().path == cache.path else { throw StorageFailure.changed }
+                if let expectedDryRun,let dryRun = plan.command(dryRun: true) {
+                    let currentPlan = try ToolRunner().run(dryRun)
+                    let text = currentPlan.text.isEmpty ? "Homebrew reports no cleanup items." : currentPlan.text
+                    guard currentPlan.status == 0,!currentPlan.truncated,text == expectedDryRun else { throw StorageFailure.changed }
+                }
+                let result = try ToolRunner(timeout: 90).run(command)
+                message = result.status == 0 ? "Tool cleanup finished. Scan again to measure the remaining cache." : "Tool exited with status \(result.status). It may have made partial changes. Scan again before retrying."
+                if !result.text.isEmpty { message += "\n" + String(result.text.prefix(1500)) }
+            } catch { message = "Tool cleanup failed: \(error.localizedDescription). Check the tool’s state and scan again before retrying." }
+            let resultMessage = message
+            DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.status = resultMessage; self?.refresh() }
+        }
+    }
+    private func reviewRelocation(_ item: StorageOpportunity) {
+        let picker = NSOpenPanel(); picker.canChooseFiles = false; picker.canChooseDirectories = true; picker.allowsMultipleSelection = false
+        picker.message = "Choose a destination for \(item.name). It may be on any accessible volume. Existing files will not be overwritten."; picker.prompt = "Choose destination"
+        guard picker.runModal() == .OK,let folder = picker.url else { return }
+        let sameVolume = FileRelocator.isSameVolume(item,destination: folder) == true
+        let alert = NSAlert(); alert.messageText = "Relocate \(item.name)?"
+        alert.informativeText = "From: \(item.url.path)\nTo: \(folder.path)\n\nHeimdall copies the file and verifies it with SHA-256 before moving the original to Trash. Emptying Trash remains your choice. " + (sameVolume ? "This destination is on the same volume, so this relocation will not reduce that volume’s disk usage." : "A destination on separate storage can reduce source usage after you empty its Trash. APFS volumes in the same container share space.")
+        alert.addButton(withTitle: "Copy, verify & trash original"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        cleanupModel.working = true; cleanupModel.status = "Copying and verifying \(item.name)…"
+        let roots = [FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")] + cleanupModel.additionalRoots
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            do {
+                let result = try FileRelocator(allowedRoots: roots).relocate(item,to: folder) { try FileManager.default.trashItem(at: $0,resultingItemURL: nil) }
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.cleanupModel.working = false
+                    self.cleanupModel.opportunities.removeAll { $0.id == item.id }
+                    self.cleanupModel.candidates.removeAll { $0.url.path == item.url.path }; self.cleanupModel.selection.remove(item.url.path)
+                    self.cleanupModel.status = "Verified copy at \(result.destination.path). Original is in Trash. " + (result.sameVolume ? "Both locations are on the same volume; no volume space saving." : "Review and empty source Trash to reclaim space if the destination uses separate storage. APFS volumes in one container share space.")
+                    self.refresh()
+                }
+            } catch { DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.notes = [error.localizedDescription] } }
         }
     }
     private func reviewTrash() {

@@ -12,7 +12,7 @@ case "$ARCH" in
   *) echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
 esac
 for TARGET_ARCH in "${ARCHS[@]}"; do
-  xcrun swiftc -O -target "$TARGET_ARCH-apple-macosx13.0" -framework AppKit -framework UserNotifications "$ROOT/Sources/Features.swift" "$ROOT/Sources/Cleanup.swift" "$ROOT/Sources/Panel.swift" "$ROOT/Sources/CleanupPanel.swift" "$ROOT/Sources/main.swift" -o "$BUILD_WORKDIR/Heimdall-$TARGET_ARCH"
+  xcrun swiftc -O -target "$TARGET_ARCH-apple-macosx13.0" -framework AppKit -framework UserNotifications "$ROOT/Sources/Features.swift" "$ROOT/Sources/Cleanup.swift" "$ROOT/Sources/Opportunities.swift" "$ROOT/Sources/Panel.swift" "$ROOT/Sources/CleanupPanel.swift" "$ROOT/Sources/main.swift" -o "$BUILD_WORKDIR/Heimdall-$TARGET_ARCH"
 done
 if [ "$ARCH" = universal ]; then
   xcrun lipo -create "$BUILD_WORKDIR/Heimdall-arm64" "$BUILD_WORKDIR/Heimdall-x86_64" -output "$APP/Contents/MacOS/Heimdall"
@@ -31,7 +31,7 @@ iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Heimdall.icns"
 python3 - "$APP" <<'PY'
 import pathlib,plistlib,sys
 p=pathlib.Path(sys.argv[1])/'Contents/Info.plist'
-p.write_bytes(plistlib.dumps({'CFBundleIdentifier':'io.github.theedward.heimdall','CFBundleName':'Heimdall','CFBundleDisplayName':'Heimdall','CFBundleExecutable':'Heimdall','CFBundleIconFile':'Heimdall.icns','CFBundlePackageType':'APPL','CFBundleShortVersionString':'1.3.0','CFBundleVersion':'6','LSMinimumSystemVersion':'13.0','LSUIElement':True,'NSHighResolutionCapable':True}))
+p.write_bytes(plistlib.dumps({'CFBundleIdentifier':'io.github.theedward.heimdall','CFBundleName':'Heimdall','CFBundleDisplayName':'Heimdall','CFBundleExecutable':'Heimdall','CFBundleIconFile':'Heimdall.icns','CFBundlePackageType':'APPL','CFBundleShortVersionString':'1.4.0','CFBundleVersion':'7','LSMinimumSystemVersion':'13.0','LSUIElement':True,'NSHighResolutionCapable':True}))
 PY
 xattr -cr "$APP"
 codesign --force --sign - "$APP"
