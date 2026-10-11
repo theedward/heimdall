@@ -8,7 +8,7 @@ The menu bar uses text only, without a redundant usage icon. Normal readings sta
 
 Requires **macOS 13 or later**. The universal download supports **Apple Silicon and Intel** Macs.
 
-1. Download **Heimdall-1.5.0-universal.dmg** from the [latest release](https://github.com/theedward/heimdall/releases/latest).
+1. Download **Heimdall-1.5.1-universal.dmg** from the [latest release](https://github.com/theedward/heimdall/releases/latest).
 2. Open the disk image and **drag Heimdall into Applications**.
 3. Eject the disk image, then open **Heimdall** from Applications.
 4. Allow notifications when macOS asks if you want low-space banners. Click the menu bar readout to select a disk, adjust thresholds, or enable **Launch at login**.
@@ -59,7 +59,7 @@ The Cleanup category checks three explicit locations:
 
 Candidates must total at least 1 MB and have no creation or modification within the last 30 days. Directories require every descendant to meet the age rule. Linked, protected, unreadable, oversized and source-control-containing build folders are skipped. Scans stop after 60 seconds or their entry limits and report incomplete results. Games, source projects, documents, archives, app data and general caches are outside these Trash rules; the other categories can identify them for manual review. Age alone does not mean you no longer need a file.
 
-Every item starts **unchecked**. Review its reason, size and path; **Reveal** opens its location in Finder. Select items, click **Review & move to Trash**, and confirm the list. Before each move, Heimdall rechecks location, file identity, metadata, contents of build folders, and whether Xcode is running. Changed items are skipped. Errors are reported per item. These removal actions only move files to Trash; permanent emptying is a separate action.
+Every item starts **unchecked**. Review its reason, size and path; **Show in Finder** opens its location. Select items, click **Review & move to Trash**, and confirm the list. Before each move, Heimdall rechecks location, file identity, metadata, contents of build folders, and whether Xcode is running. Changed items are skipped. Errors are reported per item. These removal actions only move files to Trash; permanent emptying is a separate action.
 
 **Moving to Trash does not free disk space.** Use **Open Trash** to review, then **Empty Trash…** when ready. Heimdall confirms permanent deletion before asking Finder to empty all Trash on connected disks, including items deleted outside Heimdall. Cancel is the default. Finder manages protected/in-use files and may ask for further confirmation. macOS may request Automation permission to control Finder; denial is reported with no fallback deletion. Trash is never emptied automatically, during a scan, or after moving files. Logical sizes are estimates; APFS shared storage and compression can change the actual space reclaimed. Finder can restore trashed items while they remain in Trash.
 
@@ -101,7 +101,7 @@ A same-volume relocation does not save space on that volume. Different APFS volu
 
 ![Documents review with fictional files](docs/previews/storage-documents-light.png)
 
-**Review recommended changes** shows proposed Heimdall settings before applying them: Launch at login on, notifications on (subject to macOS permission), and Balanced 60/25 GB thresholds. macOS storage settings are reviewed in their native screens rather than silently changed. Automatic 30-day Trash removal can erase files without another review; keep it off if you want approval before every permanent deletion.
+Under **Settings**, **Review recommended changes** shows proposed Heimdall settings before applying them: Launch at login on, notifications on (subject to macOS permission), and Balanced 60/25 GB thresholds. macOS storage settings are reviewed in their native screens rather than silently changed. Automatic 30-day Trash removal can erase files without another review; keep it off if you want approval before every permanent deletion.
 
 No full-disk access, administrator privilege, scheduled deletion or background file scanning is requested. macOS may ask for Downloads-folder access when you explicitly scan. Declining access leaves that location unavailable and adds a scan note.
 

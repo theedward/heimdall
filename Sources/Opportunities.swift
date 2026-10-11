@@ -123,7 +123,7 @@ struct StorageScanner {
             let platform = (entry["platformIdentifier"] as? String ?? "Simulator").replacingOccurrences(of: "com.apple.platform.",with: "")
             let lastUsed = entry["lastUsedAt"] as? String
             let usage = lastUsed.map { "Last used: \($0)." } ?? "Last use is unknown."
-            return StorageOpportunity(url: URL(fileURLWithPath: path),category: .developer,name: "\(platform) \(version) runtime",bytes: (entry["sizeBytes"] as? NSNumber).flatMap { $0.int64Value >= 0 ? $0.int64Value : nil },incomplete: false,explanation: "Installed runtime. \(usage) Review project requirements before uninstalling in Xcode Settings → Components/Platforms. Simulator devices can depend on it.",action: .manager(.xcode))
+            return StorageOpportunity(url: URL(fileURLWithPath: path),category: .developer,name: "\(platform) \(version) runtime",bytes: (entry["sizeBytes"] as? NSNumber).flatMap { $0.int64Value >= 0 ? $0.int64Value : nil },incomplete: false,explanation: "\(usage) Your projects may still need this version.",action: .manager(.xcode))
         }
     }
     func scan() -> StorageInventory {
@@ -132,7 +132,7 @@ struct StorageScanner {
         func append(_ url: URL,_ category: StorageCategory,_ name: String,_ explanation: String,_ action: StorageAction,_ minimum: Int64) {
             guard !cancelled(),fm.fileExists(atPath: url.path) else { return }
             let size = measure(url)
-            if size.incomplete && size.bytes == 0 { result.notes.append("\(name): size unavailable or scan limit reached."); return }
+            if size.incomplete && size.bytes == 0 { result.notes.append("\(name): size unavailable."); return }
             guard size.bytes >= minimum || (size.incomplete && size.bytes > 0) else { return }
             result.items.append(StorageOpportunity(url: url,category: category,name: name,bytes: size.bytes,incomplete: size.incomplete,explanation: explanation,action: action))
         }
@@ -147,28 +147,28 @@ struct StorageScanner {
             let url = home.appendingPathComponent(path)
             guard scannedCaches.insert(url.path).inserted else { continue }
             let action: StorageAction = tool.map { .cache(kind,$0) } ?? .reveal
-            append(url,.developer,name,"Recreatable package cache. Cleanup requires its installed tool and your confirmation; later builds may download dependencies again. Reported folder size is not a promise of space reclaimed.",action,minimumCacheBytes)
+            append(url,.developer,name,"Cached packages. Future installs may download them again.",action,minimumCacheBytes)
         }
         for kind in [CacheTool.npm,.homebrew] {
             guard let url = reportedCacheLocations[kind],scannedCaches.insert(url.path).inserted else { continue }
             let tool = kind == .npm ? tools.npm : tools.homebrew
-            append(url,.developer,"\(kind.rawValue) configured cache","Cache location reported by the installed tool. Cleanup requires your confirmation; reported size is not guaranteed reclaimable space.",tool.map { .cache(kind,$0) } ?? .reveal,minimumCacheBytes)
+            append(url,.developer,"\(kind.rawValue) configured cache","Cached downloads. Future installs may download them again.",tool.map { .cache(kind,$0) } ?? .reveal,minimumCacheBytes)
         }
-        append(home.appendingPathComponent(".gradle/caches"),.developer,"Gradle cache","Gradle manages retention and cleanup in Gradle User Home. Review the documented policy instead of deleting cache internals during a build.",.manager(.gradle),minimumCacheBytes)
+        append(home.appendingPathComponent(".gradle/caches"),.developer,"Gradle cache","Managed by Gradle.",.manager(.gradle),minimumCacheBytes)
         let jetBrains = home.appendingPathComponent("Library/Caches/JetBrains")
         if let versions = try? fm.contentsOfDirectory(at: jetBrains,includingPropertiesForKeys: nil) {
-            for version in versions.prefix(100) { append(version,.developer,"JetBrains: \(version.lastPathComponent)","IDE caches may include Local History. Review Help → Delete Leftover IDE Directories or File → Invalidate Caches in the IDE; usage is not inferred from folder age.",.manager(.jetBrains),minimumCacheBytes) }
+            for version in versions.prefix(100) { append(version,.developer,"JetBrains: \(version.lastPathComponent)","May include Local History. Manage it in your IDE.",.manager(.jetBrains),minimumCacheBytes) }
         }
         // Typical locations are defaults. Add folder lets users scan custom installations or another volume.
         for root in applicationRoots {
             let unity = root.appendingPathComponent("Unity/Hub/Editor")
             if let editors = try? fm.contentsOfDirectory(at: unity,includingPropertiesForKeys: nil) {
-                for editor in editors.prefix(100) { append(editor,.developer,"Unity editor \(editor.lastPathComponent)","Installed editor; usage is unknown. Check your projects' required versions and uninstall through Unity Hub → Installs.",.manager(.unity),minimumCacheBytes) }
+                for editor in editors.prefix(100) { append(editor,.developer,"Unity editor \(editor.lastPathComponent)","Check which version your projects need.",.manager(.unity),minimumCacheBytes) }
             }
         }
         if !cancelled(),tools.swift != nil {
             do { result.items += try Self.simulatorItems(simulatorInventory()) }
-            catch { result.notes.append("Simulator inventory unavailable. Use Xcode Settings to review installed runtimes.") }
+            catch { result.notes.append("Couldn’t check installed simulators.") }
         }
         let fileKeys: Set<URLResourceKey> = [.isRegularFileKey,.isDirectoryKey,.isSymbolicLinkKey,.isPackageKey,.fileSizeKey,.creationDateKey,.contentModificationDateKey,.isUbiquitousItemKey,.ubiquitousItemDownloadingStatusKey]
         func inspectFile(_ file: URL,category: StorageCategory) throws {
@@ -187,16 +187,15 @@ struct StorageScanner {
             guard bytes >= minimum || (old && bytes >= minimumOldDownloadBytes) else { return }
             let kind: String
             switch file.pathExtension.lowercased() {
-            case "dmg","pkg": kind = "Installer — keep it if you may need to reinstall."
-            case "zip","rar","7z","tar","gz": kind = "Archive — it may contain your only copy of important files."
-            case "mp4","mov","mkv","avi","m4v": kind = "Video — moving it to another disk may be useful."
-            default: kind = "Personal file — check that you no longer need it before removing it."
+            case "dmg","pkg": kind = "Installer."
+            case "zip","rar","7z","tar","gz": kind = "Archive. May be your only copy."
+            case "mp4","mov","mkv","avi","m4v": kind = "Video."
+            default: kind = "Personal file."
             }
             var explanation = kind
             if old {
-                explanation += " Created and modified over 90 days ago." + (used == nil ? " Last opened is unknown." : " No recorded opening in the last 90 days.") + " Age does not prove it is unused."
+                explanation += " Over 90 days old." + (used == nil ? " Last opened is unknown." : " No recorded opening in the last 90 days.") + ""
             }
-            explanation += " Move it to another folder or review removal to Trash. Nothing is selected automatically."
             let stamp = try? CleanupStamp.read(file)
             result.items.append(StorageOpportunity(url: file,category: category,name: file.lastPathComponent,bytes: bytes,incomplete: false,explanation: explanation,action: stamp == nil ? .reveal : .relocate,sourceStamp: stamp))
         }
@@ -209,7 +208,7 @@ struct StorageScanner {
                     guard !cancelled() else { break }
                     do { try inspectFile(file,category: .downloads) } catch { result.notes.append("Could not read \(file.lastPathComponent).") }
                 }
-                if entries.count > maximumEntries { result.notes.append("\(root.lastPathComponent): entry limit reached.") }
+                if entries.count > maximumEntries { result.notes.append("\(root.lastPathComponent): some files weren’t checked.") }
             } catch { result.notes.append("\(root.lastPathComponent): folder access unavailable.") }
         }
         let documents = home.appendingPathComponent("Documents")
@@ -232,14 +231,14 @@ struct StorageScanner {
             guard !cancelled(),fm.fileExists(atPath: root.path) else { continue }
             if let apps = try? fm.contentsOfDirectory(at: root,includingPropertiesForKeys: nil,options: [.skipsHiddenFiles]) {
                 for app in apps.prefix(300) where app.pathExtension.lowercased() == "app" {
-                    append(app,.applications,app.deletingPathExtension().lastPathComponent,"Installed application; usage is unknown. Review in Finder or use the publisher's uninstaller. Removing an app may leave its data and subscriptions. Active games and personal apps are never selected automatically.",.reveal,minimumAppBytes)
+                    append(app,.applications,app.deletingPathExtension().lastPathComponent,"Installed application.",.reveal,minimumAppBytes)
                 }
             } else { result.notes.append("Application folder access unavailable: \(root.path)") }
         }
         for root in additionalRoots {
             guard !cancelled(),let entries = try? fm.contentsOfDirectory(at: root,includingPropertiesForKeys: nil,options: [.skipsHiddenFiles]) else { continue }
             for entry in entries.prefix(100) where fm.fileExists(atPath: entry.appendingPathComponent("Unity.app/Contents/MacOS/Unity").path) {
-                append(entry,.developer,"Unity editor \(entry.lastPathComponent)","Editor found in a user-selected location. Usage is unknown; review project requirements and uninstall through Unity Hub.",.manager(.unity),minimumCacheBytes)
+                append(entry,.developer,"Unity editor \(entry.lastPathComponent)","Check which version your projects need.",.manager(.unity),minimumCacheBytes)
             }
         }
         let folderRoots = ["Documents","Desktop","Downloads","Movies","Music","Pictures","Library/Application Support","Library/Caches"].map { home.appendingPathComponent($0) } + additionalRoots
@@ -252,13 +251,13 @@ struct StorageScanner {
                     guard !cancelled(),seenFolders.insert(folder.path).inserted else { continue }
                     let values = try folder.resourceValues(forKeys: [.isDirectoryKey,.isSymbolicLinkKey])
                     guard values.isDirectory == true,values.isSymbolicLink != true else { continue }
-                    append(folder,.folders,folder.lastPathComponent,"Large folder for manual review. It may be a project, game, media library or managed app data. Moving it can break references; choose a supported relocation method in its app or review it in Finder.",.reveal,minimumLargeBytes)
+                    append(folder,.folders,folder.lastPathComponent,"Moving this folder may break links in its app.",.reveal,minimumLargeBytes)
                 }
             } catch { result.notes.append("\(root.lastPathComponent): folder access unavailable.") }
         }
         var seen: Set<String> = []
         result.items = result.items.filter { seen.insert($0.id).inserted }.sorted { ($0.bytes ?? 0) > ($1.bytes ?? 0) }
-        if cancelled() { result.notes.append("Storage inventory stopped early; results may be incomplete.") }
+        if cancelled() { result.notes.append("Some locations weren’t fully checked.") }
         return result
     }
 }
@@ -275,9 +274,9 @@ struct ToolCleanupPlan {
     let cache: URL
     var explanation: String {
         switch tool {
-        case .npm: return "Permanently clears npm's recreatable package cache at this path. There is no dry-run or Trash recovery. Later installs may download packages again."
-        case .homebrew: return "Homebrew removes old downloads (30 days) and old installed formula versions. The dry-run below covers a broader scope than just this cache folder. Tool cleanup is permanent and may require downloads later."
-        case .swift: return "Purges SwiftPM's global repository cache at this path. It does not reset source projects; the tool may clear only part of the measured cache. Later builds may download dependencies again. There is no Trash recovery."
+        case .npm: return "Permanently removes cached npm packages. Future installs may download them again."
+        case .homebrew: return "Permanently removes downloads older than 30 days and old installed package versions. Review the list below."
+        case .swift: return "Permanently removes cached Swift package repositories. Future builds may download them again. Some cached files may remain."
         }
     }
     func command(dryRun: Bool = false) -> ToolCommand? {
@@ -329,7 +328,7 @@ enum StorageFailure: Error, LocalizedError {
         case .changed: return "The file or destination changed. Scan and choose a destination again."
         case .invalidDestination: return "Choose an accessible folder separate from the source folder."
         case .collision: return "A file with this name already exists at the destination. Nothing was overwritten."
-        case .insufficientSpace: return "The destination does not have enough available space for the copy and a 256 MB margin."
+        case .insufficientSpace: return "There isn’t enough space at the destination."
         case .timeout: return "The tool exceeded its time limit. Review its state before retrying."
         case .copyKept(let path): return "Verified copy kept at \(path). The original could not be moved to Trash and remains in place."
         }

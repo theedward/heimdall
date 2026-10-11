@@ -125,7 +125,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         UNUserNotificationCenter.current().getNotificationSettings { [weak self] settings in
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.model.alertNote = settings.authorizationStatus == .denied ? "Blocked in macOS Notifications settings" : "One alert per worsening threshold · all listed disks"
+                self.model.alertNote = settings.authorizationStatus == .denied ? "Blocked in macOS Notifications settings" : ""
                 if settings.authorizationStatus == .denied { self.model.alerts = false; self.defaults.set(false,forKey: "alertsEnabled") }
                 self.syncCleanupSettings()
             }
@@ -139,7 +139,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             DispatchQueue.main.async {
                 guard let self else { return }
                 self.model.alerts = granted; self.defaults.set(granted,forKey: "alertsEnabled")
-                self.model.alertNote = error != nil ? "Couldn’t request notification permission. Try again." : granted ? "One alert per worsening threshold · all listed disks" : "Allow Heimdall in macOS Notifications settings"
+                self.model.alertNote = error != nil ? "Couldn’t request notification permission. Try again." : granted ? "" : "Allow Heimdall in macOS Notifications settings"
                 self.baselineAlerts = true; self.refresh(); self.syncCleanupSettings()
                 if granted && test {
                     let content = UNMutableNotificationContent(); content.title = "Heimdall test notification"; content.body = "Low-space alerts are ready. This is a test, not a disk warning."
@@ -178,7 +178,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         session.dataTask(with: request) { [weak self] data,response,error in
             var note = "Couldn’t check for updates. Try again."
             var releaseURL: URL?
-            if let http = response as? HTTPURLResponse,http.statusCode == 403 || http.statusCode == 429 { note = "GitHub is rate-limiting checks. Try later." }
+            if let http = response as? HTTPURLResponse,http.statusCode == 403 || http.statusCode == 429 { note = "Updates are temporarily unavailable. Try later." }
             else if error == nil,let http = response as? HTTPURLResponse,http.statusCode == 200,let data,
                     let (latest,tag,url) = try? GitHubRelease.parse(data),
                     let installed = ReleaseVersion(Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String ?? "0.0.0") {
@@ -230,7 +230,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let token = CleanupCancellation(); cleanupCancellation = token
         let generation = UUID(); cleanupGeneration = generation
         cleanupModel.scanning = true; cleanupModel.selection = []; cleanupModel.candidates = []; cleanupModel.opportunities = []; cleanupModel.notes = []
-        cleanupModel.status = "Scanning accessible user folders…"; cleanupModel.scanned = false
+        cleanupModel.status = "Scanning…"; cleanupModel.scanned = false
         let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
         let xcodeBusy = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.dt.Xcode" }
         let additionalRoots = cleanupModel.additionalRoots
@@ -260,12 +260,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             let inventory = scanner.scan()
             result.notes += inventory.notes
-            if Date() > deadline { result.notes.append("The scan reached its 60-second limit. Results may be incomplete.") }
+            if Date() > deadline { result.notes.append("Some locations weren’t fully checked.") }
             DispatchQueue.main.async {
                 guard let self,self.cleanupGeneration == generation,!token.isCancelled else { return }
                 self.cleanupModel.scanning = false; self.cleanupModel.scanned = true
                 self.cleanupModel.candidates = result.candidates; self.cleanupModel.opportunities = inventory.items; self.cleanupModel.notes = result.notes
-                self.cleanupModel.status = "\(result.candidates.count) cleanup candidates · \(inventory.items.count) storage items. Nothing selected automatically. Sizes can overlap across categories."
+                self.cleanupModel.status = "\(result.candidates.count) cleanup items · \(inventory.items.count) files and folders"
                 self.syncCleanupSettings()
             }
         }
@@ -297,7 +297,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             case .gradle: bundle = nil; documentation = "https://docs.gradle.org/current/userguide/directory_layout.html"
             }
             let alert = NSAlert(); alert.messageText = "Review in the component’s manager"
-            alert.informativeText = item.explanation + "\n\nHeimdall has not determined that this component is unused. Removal is performed and confirmed in its manager."
+            alert.informativeText = item.explanation
             alert.addButton(withTitle: bundle.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) } == nil ? "Open guide" : "Open manager")
             alert.addButton(withTitle: "Cancel")
             guard alert.runModal() == .alertFirstButtonReturn else { return }
@@ -315,7 +315,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             cleanupModel.notes = ["Close Xcode before purging Swift package caches."]; return
         }
         guard let command = plan.command() else { return }
-        cleanupModel.working = true; cleanupModel.status = "Preparing tool cleanup review…"
+        cleanupModel.working = true; cleanupModel.status = "Preparing cleanup…"
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var preview = "This tool does not provide a dry-run. You are reviewing a purge of the named recreatable cache."
             do {
@@ -328,16 +328,18 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 DispatchQueue.main.async {
                     guard let self else { return }
                     let alert = NSAlert(); alert.messageText = "Run \(kind.rawValue) cleanup?"
-                    alert.informativeText = plan.explanation + "\n\nClose active builds and installs first. Scope: \(item.url.path)\n\nCommand: \(command.display)"
-                    let scroll = NSScrollView(frame: NSRect(x: 0,y: 0,width: 560,height: 210)); scroll.hasVerticalScroller = true
-                    let view = NSTextView(frame: scroll.bounds); view.isEditable = false; view.isSelectable = true; view.font = .monospacedSystemFont(ofSize: 11,weight: .regular); view.string = text
-                    scroll.documentView = view; alert.accessoryView = scroll
+                    alert.informativeText = plan.explanation + "\n\nClose active builds and installs first.\n\n" + item.url.path
+                    if kind == .homebrew {
+                        let scroll = NSScrollView(frame: NSRect(x: 0,y: 0,width: 560,height: 210)); scroll.hasVerticalScroller = true
+                        let view = NSTextView(frame: scroll.bounds); view.isEditable = false; view.isSelectable = true; view.font = .monospacedSystemFont(ofSize: 11,weight: .regular); view.string = text
+                        scroll.documentView = view; alert.accessoryView = scroll
+                    }
                     alert.addButton(withTitle: "Run cleanup"); alert.addButton(withTitle: "Cancel")
-                    guard alert.runModal() == .alertFirstButtonReturn else { self.cleanupModel.working = false; self.cleanupModel.status = "Tool cleanup cancelled. Nothing changed."; return }
+                    guard alert.runModal() == .alertFirstButtonReturn else { self.cleanupModel.working = false; self.cleanupModel.status = "Cleanup cancelled."; return }
                     self.runToolCleanup(command,cache: item.url,stamp: rootStamp,plan: plan,expectedDryRun: kind == .homebrew ? text : nil)
                 }
             } catch {
-                DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.notes = ["Couldn’t prepare the tool’s full dry-run: \(error.localizedDescription). No cleanup was run."] }
+                DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.notes = ["Couldn’t prepare the cleanup preview: \(error.localizedDescription). No cleanup was run."] }
             }
         }
     }
@@ -345,7 +347,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if plan.tool == .swift && NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == "com.apple.dt.Xcode" }) {
             cleanupModel.working = false; cleanupModel.notes = ["Xcode started during review. Close it before purging Swift package caches."]; return
         }
-        cleanupModel.status = "Running approved tool cleanup…"
+        cleanupModel.status = "Cleaning cache…"
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var message: String
             do {
@@ -357,8 +359,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     guard currentPlan.status == 0,!currentPlan.truncated,text == expectedDryRun else { throw StorageFailure.changed }
                 }
                 let result = try ToolRunner(timeout: 90).run(command)
-                message = result.status == 0 ? "Tool cleanup finished. Scan again to measure the remaining cache." : "Tool exited with status \(result.status). It may have made partial changes. Scan again before retrying."
-                if !result.text.isEmpty { message += "\n" + String(result.text.prefix(1500)) }
+                message = result.status == 0 ? "Cache cleanup finished." : "Cleanup couldn’t finish. Some items may have been removed; scan again before retrying."
             } catch { message = "Tool cleanup failed: \(error.localizedDescription). Check the tool’s state and scan again before retrying." }
             let resultMessage = message
             DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.status = resultMessage; self?.refresh() }
@@ -369,11 +370,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         picker.message = "Choose a destination for \(item.name). It may be on any accessible volume. Existing files will not be overwritten."; picker.prompt = "Choose destination"
         guard picker.runModal() == .OK,let folder = picker.url else { return }
         let sameVolume = FileRelocator.isSameVolume(item,destination: folder) == true
-        let alert = NSAlert(); alert.messageText = "Relocate \(item.name)?"
-        alert.informativeText = "From: \(item.url.path)\nTo: \(folder.path)\n\nHeimdall copies the file and checks that the copy matches before moving the original to Trash. Emptying Trash remains your choice. " + (sameVolume ? "This destination is on the same volume, so this relocation will not reduce that volume’s disk usage." : "A destination on separate storage can reduce source usage after you empty its Trash. APFS volumes in the same container share space.")
-        alert.addButton(withTitle: "Copy, verify & trash original"); alert.addButton(withTitle: "Cancel")
+        let alert = NSAlert(); alert.messageText = "Move \(item.name)?"
+        alert.informativeText = "From: \(item.url.path)\nTo: \(folder.path)\n\nThe original will stay in Trash until you empty it. " + (sameVolume ? "Both locations are on the same disk, so this move won’t free space." : "Space is freed after you empty the original’s Trash, provided these disks don’t share storage.")
+        alert.addButton(withTitle: "Move file"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        cleanupModel.working = true; cleanupModel.status = "Copying and verifying \(item.name)…"
+        cleanupModel.working = true; cleanupModel.status = "Moving \(item.name)…"
         let roots = reviewedFileRoots
         DispatchQueue.global(qos: .utility).async { [weak self] in
             do {
@@ -383,7 +384,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     self.cleanupModel.working = false
                     self.cleanupModel.opportunities.removeAll { $0.url.path == item.url.path }
                     self.cleanupModel.candidates.removeAll { $0.url.path == item.url.path }; self.cleanupModel.selection.remove(item.url.path)
-                    self.cleanupModel.status = "Verified copy at \(result.destination.path). Original is in Trash. " + (result.sameVolume ? "Both locations are on the same volume; no volume space saving." : "Review and empty source Trash to reclaim space if the destination uses separate storage. APFS volumes in one container share space.")
+                    self.cleanupModel.status = "Moved to \(result.destination.path). Original is in Trash."
                     self.refresh()
                 }
             } catch { DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.notes = [error.localizedDescription] } }
@@ -396,7 +397,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func reviewFileRemoval(_ item: StorageOpportunity) {
         guard !cleanupModel.busy else { return }
         let alert = NSAlert(); alert.messageText = "Move \(item.name) to Trash?"
-        alert.informativeText = "\(item.url.path)\n\n" + item.explanation + "\n\nThis may be your only copy. It will remain recoverable and take space until you separately choose to empty Trash. If it changed since the scan, Heimdall will skip it."
+        alert.informativeText = "\(item.url.path)\n\nYou can restore this file from Trash until Trash is emptied."
         alert.addButton(withTitle: "Keep file"); alert.addButton(withTitle: "Move to Trash")
         guard alert.runModal() == .alertSecondButtonReturn else { return }
         let roots = reviewedFileRoots
@@ -404,7 +405,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             try ReviewedFile.moveToTrash(item,roots: roots) { try FileManager.default.trashItem(at: $0,resultingItemURL: nil) }
             cleanupModel.opportunities.removeAll { $0.url.path == item.url.path }
             cleanupModel.candidates.removeAll { $0.url.path == item.url.path }; cleanupModel.selection.remove(item.url.path)
-            cleanupModel.status = "Moved \(item.name) to Trash. Open Trash to recover it or review permanent removal."
+            cleanupModel.status = "Moved \(item.name) to Trash."
         } catch { cleanupModel.notes = [error.localizedDescription] }
         refresh()
     }
@@ -412,7 +413,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard !cleanupModel.busy else { return }
         let alert = NSAlert(); alert.alertStyle = .warning
         alert.messageText = "Permanently empty all Trash?"
-        alert.informativeText = "Finder will permanently remove ALL items in Trash on currently connected disks, including files deleted by other apps. These files cannot be restored from Trash. Disconnect disks whose Trash you want to keep, and use Open Trash to review first.\n\nmacOS may ask permission for Heimdall to control Finder, solely to perform this requested action. Finder handles files in use or protected files and may ask for further confirmation."
+        alert.informativeText = "This permanently deletes everything in Trash on connected disks, including files removed by other apps. You won’t be able to restore these files from Trash.\n\nmacOS may ask permission to control Finder."
         alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Empty Trash permanently")
         guard alert.runModal() == .alertSecondButtonReturn else { return }
         finderTrash(empty: true)
@@ -420,7 +421,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func finderTrash(empty: Bool) {
         guard !cleanupModel.busy else { return }
         cleanupModel.working = true
-        cleanupModel.status = empty ? "Waiting for Finder to empty Trash…" : "Opening Trash in Finder…"
+        cleanupModel.status = empty ? "Emptying Trash…" : "Opening Trash…"
         // A fixed Finder command; no file paths or user text are evaluated as script.
         let script = empty ? "tell application \"Finder\" to empty trash" : "tell application \"Finder\"\nactivate\nopen trash\nend tell"
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -428,9 +429,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             do {
                 let result = try ToolRunner(timeout: 90).run(ToolCommand(executable: URL(fileURLWithPath: "/usr/bin/osascript"),arguments: ["-e",script],environment: [:]))
                 if result.status == 0 {
-                    message = empty ? "Finder finished the Empty Trash request. Check Trash for any items Finder could not remove." : "Trash opened in Finder. Restore anything you want to keep before emptying it."
+                    message = empty ? "Empty Trash finished." : "Trash opened in Finder."
                 } else {
-                    message = "Finder did not complete the request. Nothing further will be attempted. Review Trash in Finder; if permission was denied, allow Heimdall under System Settings → Privacy & Security → Automation.\n" + String(result.text.prefix(800))
+                    message = "Finder couldn’t complete the request. Check Trash in Finder. If access was denied, allow Heimdall in System Settings → Privacy & Security → Automation."
                 }
             } catch { message = "Finder’s result could not be confirmed. Check Trash in Finder before retrying: " + error.localizedDescription }
             DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.status = message; self?.refresh() }
@@ -440,10 +441,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard !cleanupModel.busy,!cleanupModel.selected.isEmpty else { return }
         let selected = cleanupModel.selected
         let alert = NSAlert(); alert.messageText = "Move \(selected.count) selected items to Trash?"
-        alert.informativeText = "\(CleanupModel.size(cleanupModel.selectedBytes)) of selected items. They will remain recoverable in Trash and will still occupy disk space until Trash is emptied. Items changed since scanning will be skipped.\n\n" + selected.prefix(8).map { $0.url.path }.joined(separator: "\n") + (selected.count > 8 ? "\n…and \(selected.count - 8) more selected items from your review list." : "")
+        alert.informativeText = "\(CleanupModel.size(cleanupModel.selectedBytes)). You can restore these items from Trash until Trash is emptied.\n\n" + selected.prefix(8).map { $0.url.path }.joined(separator: "\n") + (selected.count > 8 ? "\n…and \(selected.count - 8) more selected items from your review list." : "")
         alert.addButton(withTitle: "Move to Trash"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        cleanupModel.working = true; cleanupModel.status = "Rechecking selected items before moving them…"
+        cleanupModel.working = true; cleanupModel.status = "Moving selected items…"
         let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var engine = CleanupEngine(home: home)
@@ -462,7 +463,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self.cleanupModel.candidates.removeAll { moved.contains($0.id) }
                 self.cleanupModel.selection = []
                 self.cleanupModel.notes = failures
-                self.cleanupModel.status = "Moved \(moved.count) items to Trash. \(failures.count) skipped. Review Trash in Finder before emptying it."
+                self.cleanupModel.status = "Moved \(moved.count) items to Trash. \(failures.count) skipped."
                 self.refresh()
             }
         }
@@ -475,7 +476,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         if !cleanupModel.balanced { changes.append("Use Balanced thresholds: amber below 60 GB, red below 25 GB") }
         let alert = NSAlert()
         alert.messageText = changes.isEmpty ? "Heimdall already uses the recommended settings" : "Apply these Heimdall settings?"
-        alert.informativeText = changes.isEmpty ? "Launch at login, low-space notifications and Balanced thresholds are enabled." : changes.joined(separator: "\n") + "\n\nmacOS storage settings and files are unchanged by this action. Notification permission remains your choice in macOS."
+        alert.informativeText = changes.isEmpty ? "Launch at login, low-space notifications and Balanced thresholds are enabled." : changes.joined(separator: "\n")
         alert.addButton(withTitle: changes.isEmpty ? "OK" : "Apply settings")
         if !changes.isEmpty { alert.addButton(withTitle: "Cancel") }
         guard alert.runModal() == .alertFirstButtonReturn,!changes.isEmpty else { return }

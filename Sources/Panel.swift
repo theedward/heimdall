@@ -13,9 +13,9 @@ final class BeaconModel: ObservableObject {
     @Published var selectedName = "Internal disk"
     @Published var disconnected = false
     @Published var alerts = false
-    @Published var alertNote = "One alert per worsening threshold · all listed disks"
+    @Published var alertNote = ""
     @Published var checkingUpdate = false
-    @Published var updateNote = "Version 1.5.0 · checks only when clicked"
+    @Published var updateNote = "Version 1.5.1"
     @Published var releaseURL: URL?
     var selectAction: (String) -> Void = { _ in }
     var alertAction: (Bool) -> Void = { _ in }
@@ -84,7 +84,6 @@ struct BeaconPanel: View {
                     .frame(width: 38,height: 38).background(surface,in: RoundedRectangle(cornerRadius: 10))
                 VStack(alignment: .leading,spacing: 3) {
                     Text("Heimdall").font(.system(size: 17,weight: .semibold))
-                    Text("Watching your storage").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button(action: model.refreshAction) { Image(systemName: "arrow.clockwise").frame(width: 36,height: 36).background(surface,in: RoundedRectangle(cornerRadius: 10)) }
@@ -119,8 +118,10 @@ struct BeaconPanel: View {
                         Text(String(format: "%.0f GB total",Double(model.disk?.total ?? 0) / 1e9)).font(.system(size: 12)).foregroundStyle(.secondary)
                     }
                     }
-                    Text(model.disconnected ? "Reconnect this disk or select another one." : model.error ? "Couldn’t read disk usage. Try refreshing." : model.freeGB < Double(model.critical) ? "Make room before your next install or update." : model.freeGB < Double(model.warning) ? "Space is getting low. A good time to offload files." : "Plenty of space available.")
-                        .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false,vertical: true)
+                    if model.error {
+                        Text(model.disconnected ? "Reconnect this disk or select another." : "Couldn’t read disk usage. Try refreshing.")
+                            .font(.system(size: 12)).foregroundStyle(.secondary)
+                    }
                 }
             }
             panel {
@@ -144,7 +145,7 @@ struct BeaconPanel: View {
                 VStack(alignment: .leading,spacing: 8) {
                     Toggle("Low-space notifications",isOn: Binding(get: { model.alerts },set: model.alertAction))
                         .font(.system(size: 13,weight: .medium)).toggleStyle(FluidToggle(label: "Low-space notifications"))
-                    Text(model.alertNote).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false,vertical: true)
+                    if !model.alertNote.isEmpty { Text(model.alertNote).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false,vertical: true) }
                     Button("Send test notification",action: model.testAlertAction).font(.system(size: 11)).buttonStyle(.plain)
                 }
             }
@@ -152,7 +153,6 @@ struct BeaconPanel: View {
                 Toggle(isOn: Binding(get: { model.login },set: { _ in model.loginAction() })) {
                     VStack(alignment: .leading,spacing: 4) {
                         Text("Launch at login").font(.system(size: 13,weight: .medium))
-                        Text("Keep a quiet eye on available space").font(.system(size: 10)).foregroundStyle(.secondary)
                     }
                 }.toggleStyle(FluidToggle())
             }

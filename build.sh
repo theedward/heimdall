@@ -31,7 +31,7 @@ iconutil -c icns "$ICONSET" -o "$APP/Contents/Resources/Heimdall.icns"
 python3 - "$APP" <<'PY'
 import pathlib,plistlib,sys
 p=pathlib.Path(sys.argv[1])/'Contents/Info.plist'
-p.write_bytes(plistlib.dumps({'CFBundleIdentifier':'io.github.theedward.heimdall','CFBundleName':'Heimdall','CFBundleDisplayName':'Heimdall','CFBundleExecutable':'Heimdall','CFBundleIconFile':'Heimdall.icns','CFBundlePackageType':'APPL','CFBundleShortVersionString':'1.5.0','CFBundleVersion':'8','NSAppleEventsUsageDescription':'Heimdall controls Finder only when you ask to open or empty Trash. Emptying Trash is confirmed separately and permanently removes its contents.','LSMinimumSystemVersion':'13.0','LSUIElement':True,'NSHighResolutionCapable':True}))
+p.write_bytes(plistlib.dumps({'CFBundleIdentifier':'io.github.theedward.heimdall','CFBundleName':'Heimdall','CFBundleDisplayName':'Heimdall','CFBundleExecutable':'Heimdall','CFBundleIconFile':'Heimdall.icns','CFBundlePackageType':'APPL','CFBundleShortVersionString':'1.5.1','CFBundleVersion':'9','NSAppleEventsUsageDescription':'Heimdall controls Finder only when you ask to open or empty Trash. Emptying Trash is confirmed separately and permanently removes its contents.','LSMinimumSystemVersion':'13.0','LSUIElement':True,'NSHighResolutionCapable':True}))
 PY
 xattr -cr "$APP"
 codesign --force --sign - "$APP"

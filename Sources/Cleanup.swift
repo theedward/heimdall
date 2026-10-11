@@ -13,9 +13,9 @@ enum CleanupRule: String, CaseIterable {
     }
     var reason: String {
         switch self {
-        case .installers: return "DMG or PKG download created and modified at least 30 days ago. Keep installers you may need again."
-        case .logs: return "User log created and modified at least 30 days ago. Keep logs you need for troubleshooting."
-        case .derivedData: return "Xcode build data created and modified at least 30 days ago. Xcode must be closed; the next build recreates it."
+        case .installers: return "Installers older than 30 days."
+        case .logs: return "Logs older than 30 days."
+        case .derivedData: return "Build data older than 30 days. Xcode recreates it when needed."
         }
     }
     var rootPath: String {
@@ -72,7 +72,7 @@ enum CleanupFailure: Error, LocalizedError {
         case .unsupported: return "This item contains a link, protected file or unsupported entry. It was skipped."
         case .outsideScope: return "This item is outside the approved cleanup locations."
         case .busy: return "Close Xcode before removing its build data."
-        case .limit: return "This folder exceeds the scan limit. Review it in Finder."
+        case .limit: return "This folder couldn’t be fully checked. Open it in Finder."
         }
     }
 }
@@ -134,7 +134,7 @@ struct CleanupEngine {
             if cancelled() { break }
             let base = root(rule)
             guard FileManager.default.fileExists(atPath: base.path) else { continue }
-            guard base.resolvingSymlinksInPath().path == base.path else { result.notes.append("\(rule.title): linked location skipped."); continue }
+            guard base.resolvingSymlinksInPath().path == base.path else { result.notes.append("\(rule.title): location couldn’t be checked."); continue }
             if rule == .derivedData && xcodeRunning() { result.notes.append("Xcode is running. Its build data was skipped."); continue }
             do {
                 let urls: [URL]
@@ -145,7 +145,7 @@ struct CleanupEngine {
                     var count = 0
                     for case let url as URL in walk {
                         count += 1
-                        guard !cancelled(),count <= maximumEntries else { result.notes.append("Log scan stopped at its limit."); break }
+                        guard !cancelled(),count <= maximumEntries else { result.notes.append("Some logs weren’t checked."); break }
                         let values = try url.resourceValues(forKeys: [.isSymbolicLinkKey,.isDirectoryKey])
                         if values.isSymbolicLink == true { walk.skipDescendants(); continue }
                         if values.isDirectory != true { found.append(url) }
@@ -162,9 +162,9 @@ struct CleanupEngine {
                     catch CleanupFailure.outsideScope { continue }
                     catch { skipped += 1 }
                 }
-                if urls.count > maximumEntries { result.notes.append("\(rule.title): scan limited to \(maximumEntries) items.") }
-                if skipped > 0 { result.notes.append("\(rule.title): \(skipped) unreadable, linked or unsupported items skipped.") }
-            } catch { result.notes.append("\(rule.title): access unavailable. Grant access only if macOS asks.") }
+                if urls.count > maximumEntries { result.notes.append("\(rule.title): some items weren’t checked.") }
+                if skipped > 0 { result.notes.append("\(rule.title): \(skipped) items couldn’t be checked.") }
+            } catch { result.notes.append("\(rule.title): folder access unavailable.") }
         }
         result.candidates.sort { $0.bytes > $1.bytes }
         return result

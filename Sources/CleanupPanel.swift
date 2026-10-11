@@ -23,7 +23,7 @@ final class CleanupModel: ObservableObject {
     @Published var candidates: [CleanupCandidate] = []
     @Published var selection: Set<String> = []
     @Published var notes: [String] = []
-    @Published var status = "Scan your user folders for cleanup candidates."
+    @Published var status = "Ready to scan."
     @Published var login = false
     @Published var alerts = false
     @Published var balanced = true
@@ -57,7 +57,6 @@ struct CleanupPanel: View {
             HStack {
                 VStack(alignment: .leading,spacing: 4) {
                     Text("Cleanup review").font(.system(size: 23,weight: .semibold))
-                    Text("Find what takes space. Choose what to keep, move or remove.").font(.system(size: 12)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button("Add folder…",action: model.addFolderAction).disabled(model.busy)
@@ -75,9 +74,8 @@ struct CleanupPanel: View {
             }
             Divider()
             HStack {
-                VStack(alignment: .leading,spacing: 3) {
-                    Text(model.section == "cleanup" ? "\(model.selected.count) cleanup items selected · \(CleanupModel.size(model.selectedBytes))" : "Choose an action next to an item.").font(.system(size: 13,weight: .medium))
-                    Text("Nothing moves until you confirm the selected list.").font(.system(size: 10)).foregroundStyle(.secondary)
+                if model.section == "cleanup" {
+                    Text("\(model.selected.count) selected · \(CleanupModel.size(model.selectedBytes))").font(.system(size: 13,weight: .medium))
                 }
                 Spacer()
                 Button("Close",action: model.closeAction).disabled(model.working)
@@ -99,15 +97,10 @@ struct CleanupPanel: View {
     }
     private var reviewContent: some View {
                 VStack(alignment: .leading,spacing: 14) {
-                    card {
-                        VStack(alignment: .leading,spacing: 9) {
-                            Text("Storage review").font(.system(size: 14,weight: .semibold))
-                            Text("Downloads: large files and files older than 90 days (5 MB or more). Documents: files of 100 MB or more, including inside folders. Cleanup: old installers, logs and Xcode build data.").font(.system(size: 12)).foregroundStyle(.secondary)
-                            Text("Start with Downloads and Documents. Open an item in Finder if you are unsure. Large or old does not mean safe to delete. Add folder checks another location.").font(.system(size: 12)).foregroundStyle(.secondary)
-                            Text(model.status).font(.system(size: 12,weight: .medium)).fixedSize(horizontal: false,vertical: true)
-                            if model.scanning { ProgressView().controlSize(.small) }
-                        }
-                    }
+                    HStack(spacing: 9) {
+                        Text(model.status).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false,vertical: true)
+                        if model.scanning { ProgressView().controlSize(.small) }
+                    }.padding(.horizontal,4)
                     if !model.additionalRoots.isEmpty {
                         VStack(alignment: .leading,spacing: 6) {
                             Text("Extra scan locations").font(.system(size: 11,weight: .medium))
@@ -125,7 +118,7 @@ struct CleanupPanel: View {
                     }
                     if model.scanned && model.section == "cleanup" {
                         if model.candidates.isEmpty {
-                            card { Text("No eligible items found in the accessible locations.").font(.system(size: 13)).foregroundStyle(.secondary) }
+                            card { Text("No cleanup items found.").font(.system(size: 13)).foregroundStyle(.secondary) }
                         } else {
                             ForEach(CleanupRule.allCases,id: \.self) { rule in
                                 let items = model.candidates.filter { $0.rule == rule }
@@ -143,12 +136,12 @@ struct CleanupPanel: View {
                                                     VStack(alignment: .leading,spacing: 5) {
                                                         Text(item.name).font(.system(size: 13,weight: .medium)).textSelection(.enabled)
                                                         Text(item.url.path.replacingOccurrences(of: FileManager.default.homeDirectoryForCurrentUser.path + "/",with: "~/")).font(.system(size: 10)).foregroundStyle(.secondary).lineLimit(2).textSelection(.enabled)
-                                                        Text("Last created or modified \(item.modified.formatted(date: .abbreviated,time: .omitted))").font(.system(size: 10)).foregroundStyle(.secondary)
+                                                        Text("Last changed \(item.modified.formatted(date: .abbreviated,time: .omitted))").font(.system(size: 10)).foregroundStyle(.secondary)
                                                     }
                                                     Spacer(minLength: 6)
                                                     VStack(alignment: .trailing,spacing: 7) {
                                                         Text(CleanupModel.size(item.bytes)).font(.system(size: 12,weight: .medium)).monospacedDigit()
-                                                        Button("Reveal") { model.reveal(item) }.font(.system(size: 11)).buttonStyle(.plain)
+                                                        Button("Show in Finder") { model.reveal(item) }.font(.system(size: 11)).buttonStyle(.plain)
                                                     }
                                                 }
                                                 if item.id != items.last?.id { Divider() }
@@ -162,45 +155,38 @@ struct CleanupPanel: View {
                     if !model.notes.isEmpty {
                         card {
                             VStack(alignment: .leading,spacing: 7) {
-                                Text("Scan notes").font(.system(size: 13,weight: .semibold))
+                                Text("Details").font(.system(size: 13,weight: .semibold))
                                 ForEach(Array(model.notes.enumerated()),id: \.offset) { _,note in Text(note).font(.system(size: 11)).foregroundStyle(.secondary) }
                             }
                         }
                     }
                     card {
-                        VStack(alignment: .leading,spacing: 10) {
-                            Text("Recommended Heimdall settings").font(.system(size: 14,weight: .semibold))
-                            setting("Launch at login",model.login ? "On" : "Off","On")
-                            setting("Low-space notifications",model.alerts ? "On" : "Off","On")
-                            setting("Warning thresholds",model.balanced ? "Balanced" : "Custom preset","60 / 25 GB")
-                            Button("Review recommended changes",action: model.recommendedAction).disabled(model.busy)
-                            Divider()
-                            Text("macOS storage settings").font(.system(size: 13,weight: .semibold))
-                            Text("Review Apple’s storage recommendations in System Settings. Keep automatic 30-day Trash removal off if you want every permanent deletion reviewed. Finder → Settings → Advanced controls automatic Trash removal. These macOS settings are reviewed in their native screens; Heimdall does not inspect or change private preferences.").font(.system(size: 11)).foregroundStyle(.secondary)
-                            HStack {
-                                Button("Open Storage settings",action: model.settingsAction)
-                                Button("Open Finder",action: model.finderSettingsAction)
-                            }.font(.system(size: 11))
-                        }
+                        HStack {
+                            Text("Trash").font(.system(size: 14,weight: .semibold))
+                            Spacer()
+                            Button("Open Trash",action: model.openTrashAction)
+                            Button("Empty Trash…",action: model.emptyTrashAction)
+                        }.disabled(model.busy)
                     }
                     card {
-                        VStack(alignment: .leading,spacing: 9) {
-                            Text("Trash").font(.system(size: 14,weight: .semibold))
-                            Text("Files in Trash still take space. Open Trash to check for anything you want to keep, then empty it when ready. Emptying permanently removes all Trash contents on connected disks, including files removed outside Heimdall.").font(.system(size: 12)).foregroundStyle(.secondary)
-                            HStack {
-                                Button("Open Trash",action: model.openTrashAction)
-                                Button("Empty Trash…",action: model.emptyTrashAction)
-                            }.disabled(model.busy)
-                        }
+                        DisclosureGroup("Settings") {
+                            VStack(alignment: .leading,spacing: 10) {
+                                setting("Launch at login",model.login ? "On" : "Off","On")
+                                setting("Low-space notifications",model.alerts ? "On" : "Off","On")
+                                setting("Warning thresholds",model.balanced ? "60 / 25 GB" : "Custom preset","60 / 25 GB")
+                                Button("Review recommended changes",action: model.recommendedAction).disabled(model.busy)
+                                Divider()
+                                Button("Open macOS Storage settings",action: model.settingsAction)
+                            }.padding(.top,12)
+                        }.font(.system(size: 13,weight: .medium))
                     }
-                    Text("Moving items to Trash preserves recovery. Only emptying Trash releases their space. Sizes are estimates; shared APFS storage and compression can affect space reclaimed.").font(.system(size: 11)).foregroundStyle(.secondary).padding(.horizontal,4)
                 }.padding(.horizontal,22).padding(.bottom,18)
     }
     private var opportunityCards: some View {
         VStack(alignment: .leading,spacing: 14) {
             let items = model.opportunities.filter { $0.category.rawValue == model.section }
             if model.scanned && items.isEmpty {
-                card { Text("Nothing found in this category in the scanned locations. Tools may not be installed, folders may be empty, or access may be unavailable.").font(.system(size: 12)).foregroundStyle(.secondary) }
+                card { Text("No items found.").font(.system(size: 12)).foregroundStyle(.secondary) }
             }
             ForEach(items) { item in
                 card {
@@ -216,10 +202,10 @@ struct CleanupPanel: View {
                             Button(item.action.title) { model.opportunityAction(item) }.disabled(model.busy)
                             if item.sourceStamp != nil { Button("Review removal…") { model.fileTrashAction(item) }.disabled(model.busy) }
                             if case .reveal = item.action {} else {
-                                Button("Reveal") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }.disabled(model.busy)
+                                Button("Show in Finder") { NSWorkspace.shared.activateFileViewerSelecting([item.url]) }.disabled(model.busy)
                             }
                         }.font(.system(size: 11))
-                        if item.incomplete { Text("Scan limit or access restriction: this is a partial size, not a cleanup estimate.").font(.system(size: 10)).foregroundStyle(.secondary) }
+                        if item.incomplete { Text("Size is incomplete.").font(.system(size: 10)).foregroundStyle(.secondary) }
                     }
                 }
             }
@@ -229,7 +215,7 @@ struct CleanupPanel: View {
         HStack {
             Text(name)
             Spacer()
-            Text("\(current) → \(recommended)").foregroundStyle(.secondary)
+            Text(current == recommended ? current : "\(current) → \(recommended)").foregroundStyle(.secondary)
         }.font(.system(size: 11))
     }
 }
@@ -246,7 +232,7 @@ func renderCleanupPreviews(to directory: String) throws {
             CleanupCandidate(url: URL(fileURLWithPath: "/Users/example/Library/Developer/Xcode/DerivedData/ExampleProject"),rule: .derivedData,bytes: 9_200_000_000,modified: date,snapshot: [])
         ]
         model.selection = [model.candidates[0].id,model.candidates[2].id]
-        model.status = "3 candidates · 11.88 GB to review. Nothing selected automatically."
+        model.status = "3 cleanup items found."
         let renderer = ImageRenderer(content: CleanupPanel(model: model,preview: true).frame(width: 760).fixedSize(horizontal: false,vertical: true).environment(\.colorScheme,scheme))
         renderer.scale = 2
         guard let image = renderer.cgImage,let data = NSBitmapImageRep(cgImage: image).representation(using: .png,properties: [:]) else { throw NSError(domain: "HeimdallRender",code: 5) }
@@ -261,12 +247,12 @@ func renderStoragePreviews(to directory: String) throws {
             let model = CleanupModel(); model.scanned = true; model.login = true; model.alerts = true
             model.section = section == "empty" ? "developer" : section
             model.opportunities = section == "empty" ? [] : [
-                StorageOpportunity(url: URL(fileURLWithPath: "/Users/example/.npm"),category: .developer,name: "npm cache",bytes: 3_200_000_000,incomplete: false,explanation: "Recreatable package cache. Review a tool-supported purge; dependencies may be downloaded again.",action: .cache(.npm,URL(fileURLWithPath: "/example/bin/npm"))),
-                StorageOpportunity(url: URL(fileURLWithPath: "/Users/example/Library/Caches/Homebrew"),category: .developer,name: "Homebrew cache",bytes: 1_700_000_000,incomplete: false,explanation: "Review Homebrew’s dry-run before cleanup. It can also remove old installed formula versions.",action: .cache(.homebrew,URL(fileURLWithPath: "/example/bin/brew"))),
-                StorageOpportunity(url: URL(fileURLWithPath: "/Applications/Unity/Hub/Editor/ExampleVersion"),category: .developer,name: "Unity editor ExampleVersion",bytes: 12_000_000_000,incomplete: false,explanation: "Installed editor; usage is unknown. Review your projects’ required versions before uninstalling in Unity Hub.",action: .manager(.unity)),
-                StorageOpportunity(url: URL(fileURLWithPath: "/Users/example/Downloads/Example library.zip"),category: .downloads,name: "Example library.zip",bytes: 18_400_000_000,incomplete: false,explanation: "A large archive, not assumed disposable. Choose any accessible destination. Copy verification precedes moving the original to Trash; same-volume relocation does not reduce volume usage.",action: .relocate),
-                StorageOpportunity(url: URL(fileURLWithPath: "/Users/example/Documents/Holidays/Example video.mov"),category: .documents,name: "Example video.mov",bytes: 1_800_000_000,incomplete: false,explanation: "Video — moving it to another disk may be useful. Review it before removing it; this may be your only copy.",action: .relocate),
-                StorageOpportunity(url: URL(fileURLWithPath: "/Users/example/Documents/ExampleProject"),category: .folders,name: "ExampleProject",bytes: 5_600_000_000,incomplete: true,explanation: "A large project folder for manual review. Moving it can break references; use its supported relocation method.",action: .reveal)
+                StorageOpportunity(url: URL(fileURLWithPath: "/Users/example/.npm"),category: .developer,name: "npm cache",bytes: 3_200_000_000,incomplete: false,explanation: "Cached packages. Future installs may download them again.",action: .cache(.npm,URL(fileURLWithPath: "/example/bin/npm"))),
+                StorageOpportunity(url: URL(fileURLWithPath: "/Users/example/Library/Caches/Homebrew"),category: .developer,name: "Homebrew cache",bytes: 1_700_000_000,incomplete: false,explanation: "Cached downloads and old package versions.",action: .cache(.homebrew,URL(fileURLWithPath: "/example/bin/brew"))),
+                StorageOpportunity(url: URL(fileURLWithPath: "/Applications/Unity/Hub/Editor/ExampleVersion"),category: .developer,name: "Unity editor ExampleVersion",bytes: 12_000_000_000,incomplete: false,explanation: "Check which version your projects need.",action: .manager(.unity)),
+                StorageOpportunity(url: URL(fileURLWithPath: "/Users/example/Downloads/Example library.zip"),category: .downloads,name: "Example library.zip",bytes: 18_400_000_000,incomplete: false,explanation: "Archive. May be your only copy.",action: .relocate),
+                StorageOpportunity(url: URL(fileURLWithPath: "/Users/example/Documents/Holidays/Example video.mov"),category: .documents,name: "Example video.mov",bytes: 1_800_000_000,incomplete: false,explanation: "Video.",action: .relocate),
+                StorageOpportunity(url: URL(fileURLWithPath: "/Users/example/Documents/ExampleProject"),category: .folders,name: "ExampleProject",bytes: 5_600_000_000,incomplete: true,explanation: "Project folder. Moving it may break links in its app.",action: .reveal)
             ]
             // Synthetic identity only for displaying the same personal-file controls; no real file is inspected.
             model.opportunities = model.opportunities.map { item in
@@ -276,7 +262,7 @@ func renderStoragePreviews(to directory: String) throws {
                 }
                 return previewItem
             }
-            model.status = section == "empty" ? "No matching tools or storage items found in these locations." : "Storage items found. Nothing selected automatically; category sizes may overlap."
+            model.status = section == "empty" ? "No items found." : "Scan complete."
             let renderer = ImageRenderer(content: CleanupPanel(model: model,preview: true).frame(width: 760).fixedSize(horizontal: false,vertical: true).environment(\.colorScheme,scheme)); renderer.scale = 2
             guard let image = renderer.cgImage,let data = NSBitmapImageRep(cgImage: image).representation(using: .png,properties: [:]) else { throw NSError(domain: "HeimdallRender",code: 6) }
             try data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("storage-\(section)-\(theme).png"))
