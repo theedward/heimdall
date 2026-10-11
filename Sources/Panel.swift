@@ -8,6 +8,20 @@ final class BeaconModel: ObservableObject {
     @Published var login = false
     @Published var updated = Date()
     @Published var error = false
+    @Published var targets: [DiskTarget] = [.internalDisk]
+    @Published var selectedID = "internal"
+    @Published var selectedName = "Internal disk"
+    @Published var disconnected = false
+    @Published var alerts = false
+    @Published var alertNote = "One alert per worsening threshold · all listed disks"
+    @Published var checkingUpdate = false
+    @Published var updateNote = "Version 1.2.0 · checks only when clicked"
+    @Published var releaseURL: URL?
+    var selectAction: (String) -> Void = { _ in }
+    var alertAction: (Bool) -> Void = { _ in }
+    var testAlertAction: () -> Void = {}
+    var updateAction: () -> Void = {}
+    var openReleaseAction: () -> Void = {}
     var refreshAction: () -> Void = {}
     var presetAction: (Int,Int) -> Void = { _,_ in }
     var loginAction: () -> Void = {}
@@ -15,7 +29,7 @@ final class BeaconModel: ObservableObject {
     var quitAction: () -> Void = {}
     var freeGB: Double { Double(disk?.free ?? 0) / 1e9 }
     var fraction: Double { disk?.fraction ?? 0 }
-    var state: String { error ? "Unavailable" : freeGB < Double(critical) ? "Critical" : freeGB < Double(warning) ? "Getting tight" : "Healthy" }
+    var state: String { disconnected ? "Offline" : error ? "Unavailable" : freeGB < Double(critical) ? "Critical" : freeGB < Double(warning) ? "Getting tight" : "Healthy" }
     var tint: Color { error ? .gray : freeGB < Double(critical) ? Color(red: 0.88,green: 0.23,blue: 0.25) : freeGB < Double(warning) ? Color(red: 0.84,green: 0.43,blue: 0.08) : Color.gray }
 }
 
@@ -31,6 +45,7 @@ struct FluidPress: ButtonStyle {
 
 
 struct FluidToggle: ToggleStyle {
+    var label = "Launch at login"
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     func makeBody(configuration: Configuration) -> some View {
         HStack {
@@ -42,7 +57,7 @@ struct FluidToggle: ToggleStyle {
                     .overlay(alignment: configuration.isOn ? .trailing : .leading) {
                         Circle().fill(Color.white).frame(width: 18,height: 18).padding(2)
                     }.frame(width: 44,height: 44)
-            }.buttonStyle(FluidPress()).accessibilityLabel("Launch at login")
+            }.buttonStyle(FluidPress()).accessibilityLabel(label)
                 .accessibilityValue(configuration.isOn ? "On" : "Off")
                 .animation(reduceMotion ? nil : .spring(response: 0.25,dampingFraction: 0.8),value: configuration.isOn)
         }
@@ -68,12 +83,16 @@ struct BeaconPanel: View {
                     .frame(width: 38,height: 38).background(surface,in: RoundedRectangle(cornerRadius: 10))
                 VStack(alignment: .leading,spacing: 3) {
                     Text("Heimdall").font(.system(size: 17,weight: .semibold))
-                    Text("Watching your internal disk").font(.system(size: 11)).foregroundStyle(.secondary)
+                    Text("Watching your storage").font(.system(size: 11)).foregroundStyle(.secondary)
                 }
                 Spacer()
                 Button(action: model.refreshAction) { Image(systemName: "arrow.clockwise").frame(width: 36,height: 36).background(surface,in: RoundedRectangle(cornerRadius: 10)) }
                     .buttonStyle(FluidPress()).help("Refresh disk usage").accessibilityLabel("Refresh disk usage")
             }
+            Picker("Disk",selection: Binding(get: { model.selectedID },set: model.selectAction)) {
+                ForEach(model.targets) { target in Text(target.name).tag(target.id) }
+                if model.disconnected { Text("\(model.selectedName) · offline").tag(model.selectedID) }
+            }.pickerStyle(.menu).font(.system(size: 12)).padding(.horizontal,2)
             panel {
                 VStack(alignment: .leading,spacing: 14) {
                     HStack {
@@ -86,6 +105,7 @@ struct BeaconPanel: View {
                         Text(model.error ? "—" : String(format: "%.1f",model.freeGB)).font(.system(size: 46,weight: .semibold,design: .rounded)).monospacedDigit()
                         Text("GB free").font(.system(size: 15)).foregroundStyle(.secondary)
                     }
+                    if !model.error {
                     GeometryReader { geo in
                         ZStack(alignment: .leading) {
                             Capsule().fill(Color.primary.opacity(0.08))
@@ -97,7 +117,8 @@ struct BeaconPanel: View {
                         Spacer()
                         Text(String(format: "%.0f GB total",Double(model.disk?.total ?? 0) / 1e9)).font(.system(size: 12)).foregroundStyle(.secondary)
                     }
-                    Text(model.error ? "Couldn’t read disk usage. Try refreshing." : model.freeGB < Double(model.critical) ? "Make room before your next install or update." : model.freeGB < Double(model.warning) ? "Space is getting low. A good time to offload files." : "Plenty of space available.")
+                    }
+                    Text(model.disconnected ? "Reconnect this disk or select another one." : model.error ? "Couldn’t read disk usage. Try refreshing." : model.freeGB < Double(model.critical) ? "Make room before your next install or update." : model.freeGB < Double(model.warning) ? "Space is getting low. A good time to offload files." : "Plenty of space available.")
                         .font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false,vertical: true)
                 }
             }
@@ -119,6 +140,14 @@ struct BeaconPanel: View {
                 }
             }
             panel {
+                VStack(alignment: .leading,spacing: 8) {
+                    Toggle("Low-space notifications",isOn: Binding(get: { model.alerts },set: model.alertAction))
+                        .font(.system(size: 13,weight: .medium)).toggleStyle(FluidToggle(label: "Low-space notifications"))
+                    Text(model.alertNote).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false,vertical: true)
+                    Button("Send test notification",action: model.testAlertAction).font(.system(size: 11)).buttonStyle(.plain)
+                }
+            }
+            panel {
                 Toggle(isOn: Binding(get: { model.login },set: { _ in model.loginAction() })) {
                     VStack(alignment: .leading,spacing: 4) {
                         Text("Launch at login").font(.system(size: 13,weight: .medium))
@@ -127,10 +156,19 @@ struct BeaconPanel: View {
                 }.toggleStyle(FluidToggle())
             }
             Button(action: model.storageAction) {
-                HStack { Image(systemName: "internaldrive"); Text("Review & free up space"); Spacer(); Image(systemName: "arrow.up.right").font(.system(size: 10,weight: .semibold)) }
+                HStack { Image(systemName: "internaldrive"); Text(model.selectedID == "internal" ? "Review & free up space" : "Open disk in Finder"); Spacer(); Image(systemName: "arrow.up.right").font(.system(size: 10,weight: .semibold)) }
                     .font(.system(size: 13,weight: .medium)).padding(.horizontal,14).frame(height: 42)
                     .background(surface,in: RoundedRectangle(cornerRadius: 11)).overlay(RoundedRectangle(cornerRadius: 11).stroke(border,lineWidth: 1))
-            }.buttonStyle(FluidPress()).help("Open Apple’s cleanup recommendations and large-file review in Storage settings")
+            }.buttonStyle(FluidPress()).disabled(model.disconnected).help(model.selectedID == "internal" ? "Open Apple’s cleanup recommendations and large-file review in Storage settings" : "Browse this disk in Finder")
+            VStack(alignment: .leading,spacing: 6) {
+                HStack {
+                    Button(model.checkingUpdate ? "Checking…" : "Check for updates",action: model.updateAction)
+                        .disabled(model.checkingUpdate).buttonStyle(.plain)
+                    Spacer()
+                    if model.releaseURL != nil { Button("View release",action: model.openReleaseAction).buttonStyle(.plain) }
+                }.font(.system(size: 11,weight: .medium))
+                Text(model.updateNote).font(.system(size: 10)).foregroundStyle(.secondary)
+            }.padding(.horizontal,2)
             HStack {
                 Text("Updated \(model.updated,style: .time)").font(.system(size: 10)).foregroundStyle(.secondary)
                 Spacer()
@@ -158,7 +196,7 @@ func renderPreviews(to directory: String) {
         let live = DiskReading(total: 512_000_000_000,free: 128_000_000_000)
         for (name,free) in [("healthy",live.free),("warning",Int64(42_000_000_000)),("critical",Int64(18_000_000_000))] {
             for (theme,scheme) in [("light",ColorScheme.light),("dark",ColorScheme.dark)] {
-                let model = BeaconModel(); model.disk = DiskReading(total: live.total,free: free); model.login = true
+                let model = BeaconModel(); model.disk = DiskReading(total: live.total,free: free); model.login = true; model.alerts = true
                 let renderer = ImageRenderer(content: BeaconPanel(model: model).environment(\.colorScheme,scheme))
                 renderer.scale = 2
                 guard let image = renderer.cgImage else { throw NSError(domain: "HeimdallRender",code: 1) }
@@ -167,9 +205,23 @@ func renderPreviews(to directory: String) {
                 try data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(name)-\(theme).png"))
             }
         }
+        for offline in [false,true] {
+            for (theme,scheme) in [("light",ColorScheme.light),("dark",ColorScheme.dark)] {
+                let model = BeaconModel()
+                model.selectedID = "example-external"; model.selectedName = "External SSD"
+                model.targets.append(DiskTarget(id: "example-external",name: "External SSD",path: "/Volumes/Example"))
+                model.login = true; model.alerts = true
+                model.disconnected = offline; model.error = offline
+                model.disk = offline ? nil : DiskReading(total: 1_000_000_000_000,free: 768_000_000_000)
+                if offline { model.targets = [.internalDisk] }
+                let renderer = ImageRenderer(content: BeaconPanel(model: model).environment(\.colorScheme,scheme)); renderer.scale = 2
+                guard let image = renderer.cgImage,let data = NSBitmapImageRep(cgImage: image).representation(using: .png,properties: [:]) else { throw NSError(domain: "HeimdallRender",code: 4) }
+                try data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("\(offline ? "offline" : "external")-\(theme).png"))
+            }
+        }
         for (theme,scheme) in [("light",ColorScheme.light),("dark",ColorScheme.dark)] {
             let models = [live.free,Int64(42_000_000_000),Int64(18_000_000_000)].map { free -> BeaconModel in
-                let model = BeaconModel(); model.disk = DiskReading(total: live.total,free: free); model.login = true; return model
+                let model = BeaconModel(); model.disk = DiskReading(total: live.total,free: free); model.login = true; model.alerts = true; return model
             }
             let presentation = VStack(alignment: .leading,spacing: 20) {
                 HStack(alignment: .firstTextBaseline) {
@@ -198,6 +250,6 @@ func renderPreviews(to directory: String) {
             guard let image = renderer.cgImage, let data = NSBitmapImageRep(cgImage: image).representation(using: .png,properties: [:]) else { throw NSError(domain: "HeimdallRender",code: 3) }
             try data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("overview-\(theme).png"))
         }
-        print("Rendered shared app UI to \(directory). Warning and critical use example values.")
+        print("Rendered shared app UI to \(directory). All readings use example values.")
     } catch { fputs("Preview failed: \(error)\n",stderr); exit(1) }
 }

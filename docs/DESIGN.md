@@ -19,3 +19,5 @@ Regenerate with:
 ```
 
 The menu bar shows only percentage and free-space text. Normal text uses the native label color; amber and red mark warning and critical readings. The redundant occupancy rectangle has been removed. The user confirmed the cleanup shortcut reaches the intended macOS page.
+
+The native disk menu sits above the free-space card. Offline disks have an explicit state and reconnect guidance. Notifications use a neutral toggle and a test action; updates use a small on-demand action and status text. The panel scrolls on smaller displays. Amber and red remain reserved for disk warnings.
