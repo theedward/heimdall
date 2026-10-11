@@ -3,7 +3,7 @@ import SwiftUI
 import Darwin
 import UserNotifications
 
-final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSWindowDelegate {
     private var status: NSStatusItem!
     private let model = BeaconModel()
     private let popover = NSPopover()
@@ -12,6 +12,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var tracker = AlertTracker()
     private var activeDisks: Set<String> = []
     private var baselineAlerts = true
+    private var cleanupWindow: NSWindow?
+    private let cleanupModel = CleanupModel()
+    private var cleanupCancellation: CleanupCancellation?
+    private var cleanupGeneration = UUID()
     private var updateSession: URLSession?
 
     private var loginURL: URL {
@@ -52,6 +56,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.testAlertAction = { [weak self] in self?.configureAlerts(true,test: true) }
         model.updateAction = { [weak self] in self?.checkUpdates() }
         model.openReleaseAction = { [weak self] in if let url = self?.model.releaseURL { NSWorkspace.shared.open(url) } }
+        model.cleanupAction = { [weak self] in self?.showCleanup() }
         model.quitAction = { NSApplication.shared.terminate(nil) }
         let panelHeight = min(CGFloat(850),(NSScreen.main?.visibleFrame.height ?? 900) - 80)
         let hosting = NSHostingController(rootView: ScrollView { BeaconPanel(model: model) }.frame(width: 360,height: panelHeight))
@@ -122,6 +127,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 guard let self else { return }
                 self.model.alertNote = settings.authorizationStatus == .denied ? "Blocked in macOS Notifications settings" : "One alert per worsening threshold · all listed disks"
                 if settings.authorizationStatus == .denied { self.model.alerts = false; self.defaults.set(false,forKey: "alertsEnabled") }
+                self.syncCleanupSettings()
             }
         }
     }
@@ -134,7 +140,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 guard let self else { return }
                 self.model.alerts = granted; self.defaults.set(granted,forKey: "alertsEnabled")
                 self.model.alertNote = error != nil ? "Couldn’t request notification permission. Try again." : granted ? "One alert per worsening threshold · all listed disks" : "Allow Heimdall in macOS Notifications settings"
-                self.baselineAlerts = true; self.refresh()
+                self.baselineAlerts = true; self.refresh(); self.syncCleanupSettings()
                 if granted && test {
                     let content = UNMutableNotificationContent(); content.title = "Heimdall test notification"; content.body = "Low-space alerts are ready. This is a test, not a disk warning."
                     UNUserNotificationCenter.current().add(UNNotificationRequest(identifier: "heimdall-test",content: content,trigger: nil))
@@ -181,6 +187,110 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             DispatchQueue.main.async { self?.model.checkingUpdate = false; self?.model.updateNote = note; self?.model.releaseURL = releaseURL; self?.updateSession = nil }
             session.finishTasksAndInvalidate()
         }.resume()
+    }
+    private func syncCleanupSettings() {
+        cleanupModel.login = FileManager.default.fileExists(atPath: loginURL.path)
+        cleanupModel.alerts = model.alerts
+        cleanupModel.balanced = defaults.integer(forKey: "warningGB") == 60 && defaults.integer(forKey: "criticalGB") == 25
+    }
+    private func showCleanup() {
+        popover.performClose(nil)
+        syncNotificationPermission()
+        syncCleanupSettings()
+        cleanupModel.scanAction = { [weak self] in self?.scanCleanup() }
+        cleanupModel.trashAction = { [weak self] in self?.reviewTrash() }
+        cleanupModel.recommendedAction = { [weak self] in self?.reviewRecommendedSettings() }
+        cleanupModel.settingsAction = { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.settings.Storage")!) }
+        cleanupModel.finderSettingsAction = { NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser) }
+        cleanupModel.closeAction = { [weak self] in self?.cleanupWindow?.performClose(nil) }
+        if cleanupWindow == nil {
+            let height = min(CGFloat(800),(NSScreen.main?.visibleFrame.height ?? 900) - 80)
+            let window = NSWindow(contentRect: NSRect(x: 0,y: 0,width: 720,height: height),styleMask: [.titled,.closable,.miniaturizable,.resizable],backing: .buffered,defer: false)
+            window.title = "Heimdall — Cleanup review"; window.isReleasedWhenClosed = false
+            window.contentMinSize = NSSize(width: 620,height: 500)
+            window.contentViewController = NSHostingController(rootView: CleanupPanel(model: cleanupModel))
+            window.delegate = self; window.center(); cleanupWindow = window
+        }
+        NSApp.activate(ignoringOtherApps: true)
+        cleanupWindow?.makeKeyAndOrderFront(nil)
+    }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { !cleanupModel.working }
+    func windowWillClose(_ notification: Notification) {
+        cleanupCancellation?.cancel(); cleanupGeneration = UUID(); cleanupModel.scanning = false
+        cleanupWindow = nil
+    }
+    private func scanCleanup() {
+        guard !cleanupModel.busy else { return }
+        cleanupCancellation?.cancel()
+        let token = CleanupCancellation(); cleanupCancellation = token
+        let generation = UUID(); cleanupGeneration = generation
+        cleanupModel.scanning = true; cleanupModel.selection = []; cleanupModel.candidates = []; cleanupModel.notes = []
+        cleanupModel.status = "Scanning accessible user folders…"; cleanupModel.scanned = false
+        let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
+        let xcodeBusy = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.dt.Xcode" }
+        let deadline = Date().addingTimeInterval(45)
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var engine = CleanupEngine(home: home)
+            engine.xcodeRunning = { xcodeBusy }
+            engine.cancelled = { token.isCancelled || Date() > deadline }
+            var result = engine.scan()
+            if Date() > deadline { result.notes.append("The scan reached its 45-second limit. Results may be incomplete.") }
+            DispatchQueue.main.async {
+                guard let self,self.cleanupGeneration == generation,!token.isCancelled else { return }
+                self.cleanupModel.scanning = false; self.cleanupModel.scanned = true
+                self.cleanupModel.candidates = result.candidates; self.cleanupModel.notes = result.notes
+                self.cleanupModel.status = "\(result.candidates.count) candidates · \(CleanupModel.size(result.candidates.reduce(0) { $0 + $1.bytes })) to review. Nothing selected automatically."
+                self.syncCleanupSettings()
+            }
+        }
+    }
+    private func reviewTrash() {
+        guard !cleanupModel.busy,!cleanupModel.selected.isEmpty else { return }
+        let selected = cleanupModel.selected
+        let alert = NSAlert(); alert.messageText = "Move \(selected.count) selected items to Trash?"
+        alert.informativeText = "\(CleanupModel.size(cleanupModel.selectedBytes)) of selected items. They will remain recoverable in Trash and will still occupy disk space until Trash is emptied. Items changed since scanning will be skipped.\n\n" + selected.prefix(8).map { $0.url.path }.joined(separator: "\n") + (selected.count > 8 ? "\n…and \(selected.count - 8) more selected items from your review list." : "")
+        alert.addButton(withTitle: "Move to Trash"); alert.addButton(withTitle: "Cancel")
+        guard alert.runModal() == .alertFirstButtonReturn else { return }
+        cleanupModel.working = true; cleanupModel.status = "Rechecking selected items before moving them…"
+        let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            var engine = CleanupEngine(home: home)
+            engine.xcodeRunning = { DispatchQueue.main.sync { NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.dt.Xcode" } } }
+            engine.cancelled = { false }
+            var moved: Set<String> = []; var failures: [String] = []
+            for item in selected {
+                do {
+                    try engine.moveToTrash(item) { url in try FileManager.default.trashItem(at: url,resultingItemURL: nil) }
+                    moved.insert(item.id)
+                } catch { failures.append("\(item.name): \(error.localizedDescription)") }
+            }
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.cleanupModel.working = false
+                self.cleanupModel.candidates.removeAll { moved.contains($0.id) }
+                self.cleanupModel.selection = []
+                self.cleanupModel.notes = failures
+                self.cleanupModel.status = "Moved \(moved.count) items to Trash. \(failures.count) skipped. Review Trash in Finder before emptying it."
+                self.refresh()
+            }
+        }
+    }
+    private func reviewRecommendedSettings() {
+        syncCleanupSettings()
+        var changes: [String] = []
+        if !cleanupModel.login { changes.append("Turn on Launch at login") }
+        if !cleanupModel.alerts { changes.append("Request/enable low-space notifications") }
+        if !cleanupModel.balanced { changes.append("Use Balanced thresholds: amber below 60 GB, red below 25 GB") }
+        let alert = NSAlert()
+        alert.messageText = changes.isEmpty ? "Heimdall already uses the recommended settings" : "Apply these Heimdall settings?"
+        alert.informativeText = changes.isEmpty ? "Launch at login, low-space notifications and Balanced thresholds are enabled." : changes.joined(separator: "\n") + "\n\nmacOS storage settings and files are unchanged by this action. Notification permission remains your choice in macOS."
+        alert.addButton(withTitle: changes.isEmpty ? "OK" : "Apply settings")
+        if !changes.isEmpty { alert.addButton(withTitle: "Cancel") }
+        guard alert.runModal() == .alertFirstButtonReturn,!changes.isEmpty else { return }
+        if !cleanupModel.login { toggleLogin() }
+        defaults.set(60,forKey: "warningGB"); defaults.set(25,forKey: "criticalGB"); baselineAlerts = true
+        if !cleanupModel.alerts { configureAlerts(true) }
+        refresh(); syncCleanupSettings()
     }
     private func toggleLogin() {
         do {

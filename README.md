@@ -8,7 +8,7 @@ The menu bar uses text only, without a redundant usage icon. Normal readings sta
 
 Requires **macOS 13 or later**. The universal download supports **Apple Silicon and Intel** Macs.
 
-1. Download **Heimdall-1.2.0-universal.dmg** from the [latest release](https://github.com/theedward/heimdall/releases/latest).
+1. Download **Heimdall-1.3.0-universal.dmg** from the [latest release](https://github.com/theedward/heimdall/releases/latest).
 2. Open the disk image and **drag Heimdall into Applications**.
 3. Eject the disk image, then open **Heimdall** from Applications.
 4. Allow notifications when macOS asks if you want low-space banners. Click the menu bar readout to select a disk, adjust thresholds, or enable **Launch at login**.
@@ -46,6 +46,28 @@ The [design notes](docs/DESIGN.md) describe the fluid functionalism adaptation a
 - **Review & free up space** opens Apple's Storage settings for the internal disk. External disks offer **Open disk in Finder**.
 - Launch-at-login toggle, System light/dark appearance, explicit state labels and reduced-motion-aware spring feedback.
 - Disk measurements stay local. No analytics or background file scanning. Manual update checks send an app-version User-Agent to the public GitHub API; no disk readings or file names are sent.
+
+## Cleanup review
+
+Click **Scan & review cleanup** while the internal disk is selected, then **Scan user folders**. The scan runs only on demand and checks three explicit locations:
+
+- `~/Downloads`: top-level regular `.dmg` and `.pkg` installers.
+- `~/Library/Logs`: regular `.log` files and numbered rotations.
+- `~/Library/Developer/Xcode/DerivedData`: inactive build folders, only while Xcode is closed.
+
+Candidates must total at least 1 MB and have no creation or modification within the last 30 days. Directories require every descendant to meet the age rule. Linked, protected, unreadable, oversized and source-control-containing build folders are skipped. Scans stop after 45 seconds or their entry limits and report incomplete results. Games, source projects, documents, archives, app data and general caches are outside these rules. Age alone does not mean you no longer need a file.
+
+Every item starts **unchecked**. Review its reason, size and path; **Reveal** opens its location in Finder. Select items, click **Review & move to Trash**, and confirm the list. Before each move, Heimdall rechecks location, file identity, metadata, contents of build folders, and whether Xcode is running. Changed items are skipped. Errors are reported per item; the app does not permanently delete anything or empty Trash.
+
+**Moving to Trash does not free disk space.** Review and empty Trash in Finder when ready. Logical sizes are estimates; APFS shared storage and compression can change the actual space reclaimed. Finder can restore trashed items while they remain in Trash.
+
+**Review recommended changes** shows proposed Heimdall settings before applying them: Launch at login on, notifications on (subject to macOS permission), and Balanced 60/25 GB thresholds. macOS storage settings are reviewed in their native screens rather than silently changed. Automatic 30-day Trash removal can erase files without another review; keep it off if you want approval before every permanent deletion.
+
+No full-disk access, administrator privilege, scheduled deletion or background file scanning is requested. macOS may ask for Downloads-folder access when you explicitly scan. Declining access leaves that location unavailable and adds a scan note.
+
+![Cleanup review with entirely fictional files and selections](docs/previews/cleanup-light.png)
+
+*Fictional example after manually selecting two candidates.*
 
 ## Build from source
 
