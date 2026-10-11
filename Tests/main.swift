@@ -240,3 +240,33 @@ try FileManager.default.createDirectory(at: customApp,withIntermediateDirectorie
 try Data(repeating: 3,count: 2048).write(to: customApp.appendingPathComponent("binary"))
 expect(inventoryScanner.scan().items.contains { $0.name == "Custom" && $0.category == .applications },"Apps in user-chosen locations are discovered")
 print("Passed \(checks) total checks.")
+
+// Ordinary personal-file review: age is a suggestion, never deletion permission.
+let nestedDocument = try storageFile("Documents/Trip/film.mov")
+let onlineLikeLink = genericHome.appendingPathComponent("Documents/linked.mov")
+try FileManager.default.createSymbolicLink(at: onlineLikeLink,withDestinationURL: nestedDocument)
+let packagedFile = try storageFile("Documents/Private.app/Contents/large.bin")
+let hiddenFile = try storageFile("Documents/.private/large.bin")
+var personalScanner = StorageScanner(home: genericHome,applicationRoots: [],minimumLargeBytes: 10000,minimumDocumentBytes: 1000,minimumOldDownloadBytes: 1000,now: Date().addingTimeInterval(100 * 86400))
+personalScanner.lastUsed = { _ in nil }
+let personalInventory = personalScanner.scan()
+expect(personalInventory.items.contains { $0.url.path == nestedDocument.path && $0.category == .documents },"Documents discovers nested large files automatically")
+expect(!personalInventory.items.contains { $0.url.path == packagedFile.path || $0.url.path == hiddenFile.path || $0.url.path == onlineLikeLink.path },"Documents skips app packages, hidden folders and symbolic links")
+let staleArchive = personalInventory.items.first { $0.url.path == retainedSource.path }!
+expect(staleArchive.explanation.contains("90 days") && staleArchive.explanation.contains("Last opened is unknown") && staleArchive.explanation.contains("only copy"),"Old downloads expose uncertainty and archive value")
+personalScanner.lastUsed = { _ in personalScanner.now }
+expect(!personalScanner.scan().items.contains { $0.url.path == retainedSource.path },"Recent recorded use prevents an old-download suggestion below the large threshold")
+personalScanner.lastUsed = { _ in nil }; personalScanner.now = Date()
+expect(!personalScanner.scan().items.contains { $0.url.path == retainedSource.path },"A recent download is not stale even with missing last-used metadata")
+let nestedItem = personalInventory.items.first { $0.url.path == nestedDocument.path }!
+let documentRoots = [genericHome.appendingPathComponent("Documents")]
+try ReviewedFile.validate(nestedItem,roots: documentRoots)
+expect(true,"Nested personal files validate in the explicit Documents scope")
+var removalCalled = false
+expect((try? ReviewedFile.moveToTrash(nestedItem,roots: [genericHome.appendingPathComponent("Downloads")],using: { _ in removalCalled = true })) == nil && !removalCalled,"Out-of-scope file cannot reach the Trash operation")
+try Data(repeating: 4,count: 4096).write(to: nestedDocument)
+expect((try? ReviewedFile.moveToTrash(nestedItem,roots: documentRoots,using: { _ in removalCalled = true })) == nil && !removalCalled,"Changed personal file cannot reach the Trash operation")
+let freshNested = personalScanner.scan().items.first { $0.url.path == nestedDocument.path }!
+try ReviewedFile.moveToTrash(freshNested,roots: documentRoots) { try FileManager.default.moveItem(at: $0,to: fakeTrash.appendingPathComponent("reviewed-film.mov")) }
+expect(FileManager.default.fileExists(atPath: fakeTrash.appendingPathComponent("reviewed-film.mov").path),"Reviewed removal preserves a file in injected fixture Trash")
+print("Passed \(checks) total checks, including ordinary-user Downloads and Documents review. No real Trash was touched.")

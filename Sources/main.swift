@@ -201,6 +201,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         cleanupModel.addFolderAction = { [weak self] in self?.addScanFolder() }
         cleanupModel.opportunityAction = { [weak self] item in self?.actOnOpportunity(item) }
         cleanupModel.trashAction = { [weak self] in self?.reviewTrash() }
+        cleanupModel.fileTrashAction = { [weak self] item in self?.reviewFileRemoval(item) }
+        cleanupModel.openTrashAction = { [weak self] in self?.finderTrash(empty: false) }
+        cleanupModel.emptyTrashAction = { [weak self] in self?.reviewEmptyTrash() }
         cleanupModel.recommendedAction = { [weak self] in self?.reviewRecommendedSettings() }
         cleanupModel.settingsAction = { NSWorkspace.shared.open(URL(string: "x-apple.systempreferences:com.apple.settings.Storage")!) }
         cleanupModel.finderSettingsAction = { NSWorkspace.shared.open(FileManager.default.homeDirectoryForCurrentUser) }
@@ -367,23 +370,70 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard picker.runModal() == .OK,let folder = picker.url else { return }
         let sameVolume = FileRelocator.isSameVolume(item,destination: folder) == true
         let alert = NSAlert(); alert.messageText = "Relocate \(item.name)?"
-        alert.informativeText = "From: \(item.url.path)\nTo: \(folder.path)\n\nHeimdall copies the file and verifies it with SHA-256 before moving the original to Trash. Emptying Trash remains your choice. " + (sameVolume ? "This destination is on the same volume, so this relocation will not reduce that volume’s disk usage." : "A destination on separate storage can reduce source usage after you empty its Trash. APFS volumes in the same container share space.")
+        alert.informativeText = "From: \(item.url.path)\nTo: \(folder.path)\n\nHeimdall copies the file and checks that the copy matches before moving the original to Trash. Emptying Trash remains your choice. " + (sameVolume ? "This destination is on the same volume, so this relocation will not reduce that volume’s disk usage." : "A destination on separate storage can reduce source usage after you empty its Trash. APFS volumes in the same container share space.")
         alert.addButton(withTitle: "Copy, verify & trash original"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
         cleanupModel.working = true; cleanupModel.status = "Copying and verifying \(item.name)…"
-        let roots = [FileManager.default.homeDirectoryForCurrentUser.appendingPathComponent("Downloads")] + cleanupModel.additionalRoots
+        let roots = reviewedFileRoots
         DispatchQueue.global(qos: .utility).async { [weak self] in
             do {
                 let result = try FileRelocator(allowedRoots: roots).relocate(item,to: folder) { try FileManager.default.trashItem(at: $0,resultingItemURL: nil) }
                 DispatchQueue.main.async {
                     guard let self else { return }
                     self.cleanupModel.working = false
-                    self.cleanupModel.opportunities.removeAll { $0.id == item.id }
+                    self.cleanupModel.opportunities.removeAll { $0.url.path == item.url.path }
                     self.cleanupModel.candidates.removeAll { $0.url.path == item.url.path }; self.cleanupModel.selection.remove(item.url.path)
                     self.cleanupModel.status = "Verified copy at \(result.destination.path). Original is in Trash. " + (result.sameVolume ? "Both locations are on the same volume; no volume space saving." : "Review and empty source Trash to reclaim space if the destination uses separate storage. APFS volumes in one container share space.")
                     self.refresh()
                 }
             } catch { DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.notes = [error.localizedDescription] } }
+        }
+    }
+    private var reviewedFileRoots: [URL] {
+        let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
+        return [home.appendingPathComponent("Downloads"),home.appendingPathComponent("Documents")] + cleanupModel.additionalRoots
+    }
+    private func reviewFileRemoval(_ item: StorageOpportunity) {
+        guard !cleanupModel.busy else { return }
+        let alert = NSAlert(); alert.messageText = "Move \(item.name) to Trash?"
+        alert.informativeText = "\(item.url.path)\n\n" + item.explanation + "\n\nThis may be your only copy. It will remain recoverable and take space until you separately choose to empty Trash. If it changed since the scan, Heimdall will skip it."
+        alert.addButton(withTitle: "Keep file"); alert.addButton(withTitle: "Move to Trash")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        let roots = reviewedFileRoots
+        do {
+            try ReviewedFile.moveToTrash(item,roots: roots) { try FileManager.default.trashItem(at: $0,resultingItemURL: nil) }
+            cleanupModel.opportunities.removeAll { $0.url.path == item.url.path }
+            cleanupModel.candidates.removeAll { $0.url.path == item.url.path }; cleanupModel.selection.remove(item.url.path)
+            cleanupModel.status = "Moved \(item.name) to Trash. Open Trash to recover it or review permanent removal."
+        } catch { cleanupModel.notes = [error.localizedDescription] }
+        refresh()
+    }
+    private func reviewEmptyTrash() {
+        guard !cleanupModel.busy else { return }
+        let alert = NSAlert(); alert.alertStyle = .warning
+        alert.messageText = "Permanently empty all Trash?"
+        alert.informativeText = "Finder will permanently remove ALL items in Trash on currently connected disks, including files deleted by other apps. These files cannot be restored from Trash. Disconnect disks whose Trash you want to keep, and use Open Trash to review first.\n\nmacOS may ask permission for Heimdall to control Finder, solely to perform this requested action. Finder handles files in use or protected files and may ask for further confirmation."
+        alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Empty Trash permanently")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        finderTrash(empty: true)
+    }
+    private func finderTrash(empty: Bool) {
+        guard !cleanupModel.busy else { return }
+        cleanupModel.working = true
+        cleanupModel.status = empty ? "Waiting for Finder to empty Trash…" : "Opening Trash in Finder…"
+        // A fixed Finder command; no file paths or user text are evaluated as script.
+        let script = empty ? "tell application \"Finder\" to empty trash" : "tell application \"Finder\"\nactivate\nopen trash\nend tell"
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let message: String
+            do {
+                let result = try ToolRunner(timeout: 90).run(ToolCommand(executable: URL(fileURLWithPath: "/usr/bin/osascript"),arguments: ["-e",script],environment: [:]))
+                if result.status == 0 {
+                    message = empty ? "Finder finished the Empty Trash request. Check Trash for any items Finder could not remove." : "Trash opened in Finder. Restore anything you want to keep before emptying it."
+                } else {
+                    message = "Finder did not complete the request. Nothing further will be attempted. Review Trash in Finder; if permission was denied, allow Heimdall under System Settings → Privacy & Security → Automation.\n" + String(result.text.prefix(800))
+                }
+            } catch { message = "Finder’s result could not be confirmed. Check Trash in Finder before retrying: " + error.localizedDescription }
+            DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.status = message; self?.refresh() }
         }
     }
     private func reviewTrash() {

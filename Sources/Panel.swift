@@ -15,7 +15,7 @@ final class BeaconModel: ObservableObject {
     @Published var alerts = false
     @Published var alertNote = "One alert per worsening threshold · all listed disks"
     @Published var checkingUpdate = false
-    @Published var updateNote = "Version 1.4.0 · checks only when clicked"
+    @Published var updateNote = "Version 1.5.0 · checks only when clicked"
     @Published var releaseURL: URL?
     var selectAction: (String) -> Void = { _ in }
     var alertAction: (Bool) -> Void = { _ in }
