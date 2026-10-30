@@ -15,7 +15,7 @@ final class BeaconModel: ObservableObject {
     @Published var alerts = false
     @Published var alertNote = ""
     @Published var checkingUpdate = false
-    @Published var updateNote = "Version 1.5.1"
+    @Published var updateNote = "Version 1.6.0"
     @Published var releaseURL: URL?
     var selectAction: (String) -> Void = { _ in }
     var alertAction: (Bool) -> Void = { _ in }
@@ -25,6 +25,9 @@ final class BeaconModel: ObservableObject {
     var refreshAction: () -> Void = {}
     var presetAction: (Int,Int) -> Void = { _,_ in }
     var loginAction: () -> Void = {}
+    @Published var cleaning = false
+    @Published var cleanNote = ""
+    var freeSpaceAction: () -> Void = {}
     var cleanupAction: () -> Void = {}
     var storageAction: () -> Void = {}
     var quitAction: () -> Void = {}
@@ -124,6 +127,25 @@ struct BeaconPanel: View {
                     }
                 }
             }
+            Button(action: model.freeSpaceAction) {
+                HStack {
+                    if model.cleaning { ProgressView().controlSize(.small) }
+                    else { Image(systemName: "sparkles") }
+                    Text(model.cleaning ? "Freeing up space…" : "Free up space")
+                    Spacer()
+                }.font(.system(size: 14,weight: .semibold)).padding(.horizontal,14).frame(height: 46)
+                    .background(surface,in: RoundedRectangle(cornerRadius: 11))
+                    .overlay(RoundedRectangle(cornerRadius: 11).stroke(border,lineWidth: 1))
+            }.buttonStyle(FluidPress()).disabled(model.cleaning)
+                .help("Remove old logs, inactive build data and cached package downloads from this Mac.")
+            if !model.cleanNote.isEmpty {
+                Text(model.cleanNote).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false,vertical: true)
+            }
+            HStack {
+                Button("Review files…",action: model.cleanupAction).disabled(model.cleaning)
+                Spacer()
+                Text("Internal storage").foregroundStyle(.secondary)
+            }.font(.system(size: 11))
             panel {
                 VStack(alignment: .leading,spacing: 12) {
                     Text("Warn me when space gets low").font(.system(size: 13,weight: .semibold))
@@ -156,15 +178,8 @@ struct BeaconPanel: View {
                     }
                 }.toggleStyle(FluidToggle())
             }
-            if !model.disconnected {
-                Button(action: model.cleanupAction) {
-                    HStack { Image(systemName: "sparkle.magnifyingglass"); Text("Scan & review cleanup"); Spacer(); Image(systemName: "arrow.up.right").font(.system(size: 10,weight: .semibold)) }
-                        .font(.system(size: 13,weight: .medium)).padding(.horizontal,14).frame(height: 42)
-                        .background(surface,in: RoundedRectangle(cornerRadius: 11)).overlay(RoundedRectangle(cornerRadius: 11).stroke(border,lineWidth: 1))
-                }.buttonStyle(FluidPress()).help("Review cleanup, developer tools, large files and applications across accessible locations.")
-            }
             Button(action: model.storageAction) {
-                HStack { Image(systemName: "internaldrive"); Text(model.selectedID == "internal" ? "Review & free up space" : "Open disk in Finder"); Spacer(); Image(systemName: "arrow.up.right").font(.system(size: 10,weight: .semibold)) }
+                HStack { Image(systemName: "internaldrive"); Text(model.selectedID == "internal" ? "macOS Storage settings" : "Open disk in Finder"); Spacer(); Image(systemName: "arrow.up.right").font(.system(size: 10,weight: .semibold)) }
                     .font(.system(size: 13,weight: .medium)).padding(.horizontal,14).frame(height: 42)
                     .background(surface,in: RoundedRectangle(cornerRadius: 11)).overlay(RoundedRectangle(cornerRadius: 11).stroke(border,lineWidth: 1))
             }.buttonStyle(FluidPress()).disabled(model.disconnected).help(model.selectedID == "internal" ? "Open Apple’s cleanup recommendations and large-file review in Storage settings" : "Browse this disk in Finder")

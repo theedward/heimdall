@@ -1,14 +1,16 @@
 import Foundation
 import Darwin
 
-// Only these three explicit locations are eligible. No whole-disk or cache sweep.
+// Explicit cleanup locations only. Personal downloads always require review.
 enum CleanupRule: String, CaseIterable {
-    case installers, logs, derivedData
+    case installers, logs, derivedData, npmDownloads, homebrewDownloads
     var title: String {
         switch self {
         case .installers: return "Old installers"
         case .logs: return "Old user logs"
         case .derivedData: return "Inactive Xcode build data"
+        case .npmDownloads: return "Cached npm downloads"
+        case .homebrewDownloads: return "Cached Homebrew downloads"
         }
     }
     var reason: String {
@@ -16,6 +18,7 @@ enum CleanupRule: String, CaseIterable {
         case .installers: return "Installers older than 30 days."
         case .logs: return "Logs older than 30 days."
         case .derivedData: return "Build data older than 30 days. Xcode recreates it when needed."
+        case .npmDownloads, .homebrewDownloads: return "Cached downloads older than 30 days. Future installs may download them again."
         }
     }
     var rootPath: String {
@@ -23,6 +26,8 @@ enum CleanupRule: String, CaseIterable {
         case .installers: return "Downloads"
         case .logs: return "Library/Logs"
         case .derivedData: return "Library/Developer/Xcode/DerivedData"
+        case .npmDownloads: return ".npm/_cacache/content-v2"
+        case .homebrewDownloads: return "Library/Caches/Homebrew/downloads"
         }
     }
 }
@@ -85,6 +90,7 @@ struct CleanupEngine {
     var maximumEntries = 20_000
     var xcodeRunning: () -> Bool = { false }
     var cancelled: () -> Bool = { false }
+    var rules: [CleanupRule] = CleanupRule.allCases
     var cutoff: Date { now.addingTimeInterval(-Double(ageDays) * 86400) }
     private func root(_ rule: CleanupRule) -> URL { home.appendingPathComponent(rule.rootPath,isDirectory: true).standardizedFileURL }
     private func validateLocation(_ url: URL,_ rule: CleanupRule) throws {
@@ -93,7 +99,7 @@ struct CleanupEngine {
         guard item.path.hasPrefix(base.path + "/"),item.path != base.path else { throw CleanupFailure.outsideScope }
         // Resolving every ancestor prevents an approved-looking path from escaping via links.
         guard base.resolvingSymlinksInPath().path == base.path,item.resolvingSymlinksInPath().path == item.path else { throw CleanupFailure.outsideScope }
-        if rule != .logs && item.deletingLastPathComponent().path != base.path { throw CleanupFailure.outsideScope }
+        if ![CleanupRule.logs,.npmDownloads,.homebrewDownloads].contains(rule) && item.deletingLastPathComponent().path != base.path { throw CleanupFailure.outsideScope }
         if rule == .installers && !["dmg","pkg"].contains(item.pathExtension.lowercased()) { throw CleanupFailure.outsideScope }
         if rule == .logs {
             let suffix = item.pathExtension
@@ -130,7 +136,7 @@ struct CleanupEngine {
     }
     func scan() -> CleanupScan {
         var result = CleanupScan()
-        for rule in CleanupRule.allCases {
+        for rule in rules {
             if cancelled() { break }
             let base = root(rule)
             guard FileManager.default.fileExists(atPath: base.path) else { continue }
@@ -138,7 +144,7 @@ struct CleanupEngine {
             if rule == .derivedData && xcodeRunning() { result.notes.append("Xcode is running. Its build data was skipped."); continue }
             do {
                 let urls: [URL]
-                if rule == .logs {
+                if [CleanupRule.logs,.npmDownloads,.homebrewDownloads].contains(rule) {
                     var failed = false
                     guard let walk = FileManager.default.enumerator(at: base,includingPropertiesForKeys: [.isSymbolicLinkKey,.isDirectoryKey],options: [.skipsHiddenFiles],errorHandler: { _,_ in failed = true; return false }) else { throw CleanupFailure.unsupported }
                     var found: [URL] = []
@@ -177,5 +183,44 @@ struct CleanupEngine {
     func moveToTrash(_ item: CleanupCandidate,using trash: (URL) throws -> Void) throws {
         try revalidate(item)
         try trash(item.url)
+    }
+}
+
+struct AutomaticCleanupResult {
+    var removedBytes: Int64 = 0
+    var removedCount = 0
+    var skippedCount = 0
+    var busyCount = 0
+    var notes: [String] = []
+}
+
+struct AutomaticCleanup {
+    var engine: CleanupEngine
+    // Rechecked before each removal. Unknown process state means busy.
+    var buildersRunning: () -> Bool = { true }
+    var remove: (URL) throws -> Void
+    func run() -> AutomaticCleanupResult {
+        var result = AutomaticCleanupResult()
+        var scanner = engine
+        scanner.rules = [.logs,.derivedData,.npmDownloads,.homebrewDownloads]
+        let scan = scanner.scan()
+        result.notes = scan.notes
+        for item in scan.candidates {
+            if scanner.cancelled() { result.notes.append("Cleanup stopped early."); break }
+            if item.rule != .logs && buildersRunning() {
+                result.skippedCount += 1; result.busyCount += 1
+                continue
+            }
+            do {
+                // Installers and personal files can never enter the automatic removal path.
+                guard item.rule != .installers else { throw CleanupFailure.outsideScope }
+                try scanner.revalidate(item)
+                guard !scanner.cancelled() else { throw CleanupFailure.limit }
+                try remove(item.url)
+                result.removedCount += 1
+                result.removedBytes += item.bytes
+            } catch { result.skippedCount += 1 }
+        }
+        return result
     }
 }

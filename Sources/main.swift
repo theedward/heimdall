@@ -56,8 +56,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.testAlertAction = { [weak self] in self?.configureAlerts(true,test: true) }
         model.updateAction = { [weak self] in self?.checkUpdates() }
         model.openReleaseAction = { [weak self] in if let url = self?.model.releaseURL { NSWorkspace.shared.open(url) } }
+        model.freeSpaceAction = { [weak self] in self?.freeUpSpace() }
         model.cleanupAction = { [weak self] in self?.showCleanup() }
-        model.quitAction = { NSApplication.shared.terminate(nil) }
+        model.quitAction = { [weak self] in if self?.model.cleaning != true { NSApplication.shared.terminate(nil) } }
         let panelHeight = min(CGFloat(850),(NSScreen.main?.visibleFrame.height ?? 900) - 80)
         let hosting = NSHostingController(rootView: ScrollView { BeaconPanel(model: model) }.frame(width: 360,height: panelHeight))
         popover.contentViewController = hosting
@@ -188,6 +189,47 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             session.finishTasksAndInvalidate()
         }.resume()
     }
+    private func freeUpSpace() {
+        guard !model.cleaning,!cleanupModel.busy else { return }
+        cleanupCancellation?.cancel(); cleanupGeneration = UUID()
+        cleanupModel.scanning = false; cleanupModel.working = true
+        model.cleaning = true; model.cleanNote = ""
+        let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
+        let before = try? DiskReading.read(path: home.path).free
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            let deadline = Date().addingTimeInterval(120)
+            func buildersRunning() -> Bool {
+                let command = ToolCommand(executable: URL(fileURLWithPath: "/bin/ps"),arguments: ["-axo","comm="],environment: [:])
+                guard let output = try? ToolRunner(timeout: 3).run(command),output.status == 0,!output.truncated else { return true }
+                let active: Set<String> = ["Xcode","xcodebuild","swift","swift-build","swift-package","swift-frontend","clang","clang++","ninja","make","cmake","node","npm","brew","ruby","Unity","Unity Hub","java","gradle"]
+                return output.text.split(separator: "\n").contains { active.contains(URL(fileURLWithPath: String($0).trimmingCharacters(in: .whitespaces)).lastPathComponent) }
+            }
+            var engine = CleanupEngine(home: home)
+            engine.cancelled = { Date() > deadline }
+            engine.xcodeRunning = buildersRunning
+            let result = AutomaticCleanup(engine: engine,buildersRunning: buildersRunning,remove: { try FileManager.default.removeItem(at: $0) }).run()
+            let after = try? DiskReading.read(path: home.path).free
+            DispatchQueue.main.async {
+                guard let self else { return }
+                self.model.cleaning = false; self.cleanupModel.working = false
+                let bytes = ByteCountFormatter.string(fromByteCount: result.removedBytes,countStyle: .file)
+                if result.removedCount > 0 {
+                    if let before,let after,after > before {
+                        self.model.cleanNote = "\(ByteCountFormatter.string(fromByteCount: after - before,countStyle: .file)) more available."
+                    } else { self.model.cleanNote = "Removed \(bytes) of cached files and old logs." }
+                } else if result.busyCount > 0 {
+                    self.model.cleanNote = "Close your development tools and try again."
+                } else if result.skippedCount > 0 || !result.notes.isEmpty {
+                    self.model.cleanNote = "Some locations couldn’t be cleaned. Review files for more options."
+                } else { self.model.cleanNote = "Nothing more to clean automatically." }
+                if result.removedCount > 0 && (result.skippedCount > 0 || !result.notes.isEmpty) { self.model.cleanNote += " Some items were skipped." }
+                self.cleanupModel.status = self.model.cleanNote
+                // Invalidate review snapshots affected by this run.
+                self.cleanupModel.candidates = []; self.cleanupModel.opportunities = []; self.cleanupModel.selection = []; self.cleanupModel.scanned = false
+                self.refresh()
+            }
+        }
+    }
     private func syncCleanupSettings() {
         cleanupModel.login = FileManager.default.fileExists(atPath: loginURL.path)
         cleanupModel.alerts = model.alerts
@@ -218,6 +260,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         NSApp.activate(ignoringOtherApps: true)
         cleanupWindow?.makeKeyAndOrderFront(nil)
+        if !cleanupModel.scanned && !cleanupModel.busy { scanCleanup() }
     }
     func windowShouldClose(_ sender: NSWindow) -> Bool { !cleanupModel.working }
     func windowWillClose(_ notification: Notification) {

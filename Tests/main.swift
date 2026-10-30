@@ -270,3 +270,46 @@ let freshNested = personalScanner.scan().items.first { $0.url.path == nestedDocu
 try ReviewedFile.moveToTrash(freshNested,roots: documentRoots) { try FileManager.default.moveItem(at: $0,to: fakeTrash.appendingPathComponent("reviewed-film.mov")) }
 expect(FileManager.default.fileExists(atPath: fakeTrash.appendingPathComponent("reviewed-film.mov").path),"Reviewed removal preserves a file in injected fixture Trash")
 print("Passed \(checks) total checks, including ordinary-user Downloads and Documents review. No real Trash was touched.")
+
+// One-click cleanup is tested only on a disposable home, never the user's files.
+let autoHome = fixture.appendingPathComponent("AutoHome")
+try FileManager.default.createDirectory(at: autoHome,withIntermediateDirectories: true)
+func autoFile(_ path: String,recent: Bool = false) throws -> URL {
+    let url = autoHome.appendingPathComponent(path)
+    try FileManager.default.createDirectory(at: url.deletingLastPathComponent(),withIntermediateDirectories: true)
+    try Data(repeating: 33,count: 2048).write(to: url)
+    if recent { try FileManager.default.setAttributes([.modificationDate: fixtureNow],ofItemAtPath: url.path) }
+    return url
+}
+let autoLog = try autoFile("Library/Logs/App/old.log")
+let autoBuild = try autoFile("Library/Developer/Xcode/DerivedData/OldProject/Build/output")
+let autoNpm = try autoFile(".npm/_cacache/content-v2/sha512/aa/bb/old-package")
+let autoBrew = try autoFile("Library/Caches/Homebrew/downloads/old-package.tar.gz")
+let autoRecent = try autoFile(".npm/_cacache/content-v2/sha512/aa/bb/new-package",recent: true)
+let autoInstaller = try autoFile("Downloads/important.dmg")
+let autoDocument = try autoFile("Documents/important.pdf")
+let autoHistory = try autoFile("Library/Caches/JetBrains/IDE/LocalHistory/entry")
+let autoTrash = try autoFile(".Trash/keep.txt")
+let autoIndex = try autoFile(".npm/_cacache/index-v5/keep-index")
+let autoLinked = autoHome.appendingPathComponent("Library/Caches/Homebrew/downloads/linked")
+try FileManager.default.createSymbolicLink(at: autoLinked,withDestinationURL: autoDocument)
+var autoEngine = CleanupEngine(home: autoHome,now: fixtureNow,minimumBytes: 1)
+let busyAuto = AutomaticCleanup(engine: autoEngine,buildersRunning: { true },remove: { try FileManager.default.removeItem(at: $0) }).run()
+expect(busyAuto.removedCount == 1 && busyAuto.busyCount == 3,"Automatic cleanup removes old logs but skips developer files when builders run")
+expect(!FileManager.default.fileExists(atPath: autoLog.path) && FileManager.default.fileExists(atPath: autoBuild.path),"Busy build output is preserved while logs are removed permanently")
+let freeAuto = AutomaticCleanup(engine: autoEngine,buildersRunning: { false },remove: { try FileManager.default.removeItem(at: $0) }).run()
+expect(freeAuto.removedCount == 3 && freeAuto.removedBytes == 6144,"One-click cleanup removes eligible cache contents and inactive build output")
+for file in [autoRecent,autoInstaller,autoDocument,autoHistory,autoTrash,autoIndex] {
+    expect(FileManager.default.fileExists(atPath: file.path),"Automatic cleanup preserves recent, personal, history, Trash and cache-index files")
+}
+expect(FileManager.default.fileExists(atPath: autoLinked.path),"Automatic cleanup preserves symlinks and their targets")
+expect(AutomaticCleanup(engine: autoEngine,buildersRunning: { false },remove: { _ in fatalError("Nothing should be removed") }).run().removedCount == 0,"Repeated cleanup with no eligible files is a no-op")
+let autoChanged = try autoFile("Library/Caches/Homebrew/downloads/changed")
+let changedAuto = AutomaticCleanup(engine: autoEngine,buildersRunning: {
+    try? Data(repeating: 99,count: 4096).write(to: autoChanged)
+    return false
+},remove: { _ in fatalError("Changed item must never be removed") }).run()
+expect(changedAuto.removedCount == 0 && changedAuto.skippedCount == 1,"Revalidation prevents automatic deletion of a cache file changed after scan")
+autoEngine.cancelled = { true }
+expect(AutomaticCleanup(engine: autoEngine,buildersRunning: { false },remove: { _ in fatalError("Cancelled cleanup must not remove files") }).run().removedCount == 0,"Automatic cleanup honors cancellation")
+print("Passed \(checks) total checks including one-click cleanup, busy tools, personal-data exclusion, stale snapshots and repeat runs.")

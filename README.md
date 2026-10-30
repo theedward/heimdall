@@ -8,7 +8,7 @@ The menu bar uses text only, without a redundant usage icon. Normal readings sta
 
 Requires **macOS 13 or later**. The universal download supports **Apple Silicon and Intel** Macs.
 
-1. Download **Heimdall-1.5.1-universal.dmg** from the [latest release](https://github.com/theedward/heimdall/releases/latest).
+1. Download **Heimdall-1.6.0-universal.dmg** from the [latest release](https://github.com/theedward/heimdall/releases/latest).
 2. Open the disk image and **drag Heimdall into Applications**.
 3. Eject the disk image, then open **Heimdall** from Applications.
 4. Allow notifications when macOS asks if you want low-space banners. Click the menu bar readout to select a disk, adjust thresholds, or enable **Launch at login**.
@@ -17,7 +17,15 @@ Requires **macOS 13 or later**. The universal download supports **Apple Silicon 
 
 *Installer layout preview, using the packaged artwork and icons.*
 
-### First launch
+### Free up space
+
+Click **Free up space** in the menu bar panel. Heimdall automatically finds and permanently removes eligible old logs, inactive Xcode DerivedData, npm cached download contents (`~/.npm/_cacache/content-v2`) and Homebrew cached downloads (`~/Library/Caches/Homebrew/downloads`). No folder setup, selection or additional confirmation is required. Every file must have been created and modified over 30 days ago. Later builds or installs may recreate or download these files.
+
+Personal Downloads, Documents, applications, games, local history and Trash are excluded. Development caches and build data are skipped while detected build/install tools are running; unreadable process state also skips them. Links, changed files, protected entries and source-control-containing build folders are skipped. Cleanup runs only when clicked, on the current user’s home storage, regardless of the disk selected for display; it is never scheduled in the background. Custom review locations do not expand automatic cleanup scope.
+
+The result reports the change in available space, or the amount of files removed when filesystem space has not yet changed. Other activity and APFS snapshots can affect the available-space measurement. If nothing eligible exists, the app says so. **Review files…** remains available for personal files and scans its default locations on opening.
+
+## First launch
 
 This release is ad-hoc signed, without an Apple Developer ID certificate or notarization. macOS may block the first launch. After attempting to open the app, use **System Settings → Privacy & Security → Open Anyway** if macOS offers it, then confirm opening. Only approve a download you trust. You can also build from the MIT-licensed source below.
 
@@ -49,17 +57,18 @@ The [design notes](docs/DESIGN.md) describe the fluid functionalism adaptation a
 
 ## Cleanup review
 
-Click **Scan & review cleanup**, then **Scan**. The window opens on Downloads and also offers Documents, Cleanup, Developer tools, Applications, and Large folders. **Add folder** includes a custom location on any accessible volume; remove it to change the next scan. No external drive or particular folder layout is required. An empty category is a valid result, including on Macs without development tools.
+Click **Review files…**. The review scans automatically when first opened. The window opens on Downloads and also offers Documents, Cleanup, Developer tools, Applications, and Large folders. **Add folder** includes a custom location on any accessible volume; remove it to change the next scan. No external drive or particular folder layout is required. An empty category is a valid result, including on Macs without development tools.
 
-The Cleanup category checks three explicit locations:
+The optional Cleanup review checks these explicit locations:
 
 - `~/Downloads`: top-level regular `.dmg` and `.pkg` installers.
 - `~/Library/Logs`: regular `.log` files and numbered rotations.
 - `~/Library/Developer/Xcode/DerivedData`: inactive build folders, only while Xcode is closed.
+- `~/.npm/_cacache/content-v2` and `~/Library/Caches/Homebrew/downloads`: cached package downloads.
 
 Candidates must total at least 1 MB and have no creation or modification within the last 30 days. Directories require every descendant to meet the age rule. Linked, protected, unreadable, oversized and source-control-containing build folders are skipped. Scans stop after 60 seconds or their entry limits and report incomplete results. Games, source projects, documents, archives, app data and general caches are outside these Trash rules; the other categories can identify them for manual review. Age alone does not mean you no longer need a file.
 
-Every item starts **unchecked**. Review its reason, size and path; **Show in Finder** opens its location. Select items, click **Review & move to Trash**, and confirm the list. Before each move, Heimdall rechecks location, file identity, metadata, contents of build folders, and whether Xcode is running. Changed items are skipped. Errors are reported per item. These removal actions only move files to Trash; permanent emptying is a separate action.
+In the optional review, every item starts **unchecked**. Review its reason, size and path; **Show in Finder** opens its location. Select items, click **Review & move to Trash**, and confirm the list. Before each move, Heimdall rechecks location, file identity, metadata, contents of build folders, and whether Xcode is running. Changed items are skipped. Errors are reported per item. These removal actions only move files to Trash; permanent emptying is a separate action.
 
 **Moving to Trash does not free disk space.** Use **Open Trash** to review, then **Empty Trash…** when ready. Heimdall confirms permanent deletion before asking Finder to empty all Trash on connected disks, including items deleted outside Heimdall. Cancel is the default. Finder manages protected/in-use files and may ask for further confirmation. macOS may request Automation permission to control Finder; denial is reported with no fallback deletion. Trash is never emptied automatically, during a scan, or after moving files. Logical sizes are estimates; APFS shared storage and compression can change the actual space reclaimed. Finder can restore trashed items while they remain in Trash.
 
@@ -85,7 +94,7 @@ Cache discovery includes typical locations and custom npm/Homebrew cache locatio
 - [Gradle retention](https://docs.gradle.org/current/userguide/directory_layout.html) and [JetBrains leftover directories](https://www.jetbrains.com/help/idea/directories-used-by-the-ide-to-store-settings-caches-plugins-and-logs.html) use their documented controls; IDE Local History is not swept away by Heimdall.
 - Editor/runtime removal is reviewed in [Unity Hub](https://docs.unity.com/en-us/hub/add-editor) or [Xcode settings](https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components). Heimdall opens the detected manager, or its guide when unavailable.
 
-Tool cleanup is permanent and may require dependency downloads later. The confirmation shows its exact scope and command; close active builds/installations before approving. The scan never executes cleanup commands. Tool timeouts and failures are reported; a failed cleanup may have made partial changes, so rescan before retrying.
+Tool cleanup is permanent and may require dependency downloads later. The confirmation shows its scope; close active builds/installations before approving. The scan never executes cleanup commands. Tool timeouts and failures are reported; a failed cleanup may have made partial changes, so rescan before retrying.
 
 ### Relocation without a drive assumption
 
