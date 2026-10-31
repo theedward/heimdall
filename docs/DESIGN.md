@@ -1,33 +1,18 @@
-# Heimdall interface
+# Heimdall 2 interface
 
-Native adaptation of [Fluid Functionalism](https://www.fluidfunctionalism.com/docs) and its [relative surface hierarchy](https://www.fluidfunctionalism.com/docs/surfaces).
+Native adaptation of [Fluid Functionalism](https://www.fluidfunctionalism.com/docs) and its [relative surface hierarchy](https://www.fluidfunctionalism.com/docs/surfaces). Neutral layered surfaces, fine borders, rounded controls and restrained shadows keep focus on the next useful action. Amber and red remain reserved for disk warnings. Press feedback uses springs; Reduce Motion removes scaling. Native keyboard controls, selected navigation state and accessibility labels remain available.
 
-The panel uses neutral nested surfaces, fine borders, quiet shadows, and a free-space-first hierarchy. Normal readings are gray; amber and red signal warning and critical states. State names and explicit thresholds accompany color. Both system light and dark appearances are supported.
+The menu prioritizes decisions: disk context, up to two Easy wins, one Worth considering, All recommendations, and a compact Preferences control. More difficult opportunities stay visible alongside simple ones. Each card shows a concrete action, the size involved and one relevant consequence. It never adds overlapping sizes into a reclaimable total.
 
-The warning preset selector uses a raised selection surface. Press feedback compresses subtly and reverses with spring motion. Reduce Motion removes scaling and spring feedback. Hover/tooltips and keyboard focus use native macOS behavior. The launch-at-login switch is rendered in SwiftUI, using the same implementation in the app and previews.
+The deeper window replaces the category-button grid with a persistent sidebar: Recommendations, Files & apps, Moves, Preferences. Files are searchable and filterable, with focused details. A move is approved in one sheet that offers compatible destinations and an organized folder; progress covers copying and verification. Trash has a separate permanent-deletion sheet. Tool purges use the same focused sheet pattern, with Homebrew’s preview included. Completed moves have a durable Move back action. Dismissals are local preferences that users can restore.
 
-Pictures are rendered from the actual shared SwiftUI panel and menu bar text, not drawn mockups. Normal (128 GB free), warning (42 GB free) and critical (18 GB free) all use generated readings to illustrate states without filling the disk. They are visual examples, not evidence that the disk has those free-space values.
+Discovery runs automatically after launch and about every 15 minutes; unavailable and incomplete locations appear under a disclosure rather than filling the primary workflow with implementation notes. Discovery is read-only. Deletion, transfer and Trash emptying require explicit user actions.
 
-![Light appearance and states](previews/overview-light.png)
-![Dark appearance and states](previews/overview-dark.png)
+Copy stays short: names, sizes, consequences and results. Settings and technical detail are secondary. Rendered screenshots use fictional files and disk values, shared production views, and both system appearances. The renderer omits only scroll containers where necessary; actual controls and card content stay shared.
 
 Regenerate with:
 
 ```sh
 ./build.sh
-"build/Heimdall.app/Contents/MacOS/Heimdall" --render docs/previews
+build/Heimdall.app/Contents/MacOS/Heimdall --render docs/previews
 ```
-
-The menu bar shows only percentage and free-space text. Normal text uses the native label color; amber and red mark warning and critical readings. The redundant occupancy rectangle has been removed. The user confirmed the cleanup shortcut reaches the intended macOS page.
-
-The native disk menu sits above the free-space card. Offline disks have an explicit state and reconnect guidance. Notifications use a neutral toggle and a test action; updates use a small on-demand action and status text. The panel scrolls on smaller displays. Amber and red remain reserved for disk warnings.
-
-Cleanup uses a separate resizable native window so the menu bar stays compact. Neutral cards separate the rules, candidate groups and setting recommendations. Each row has an unchecked-by-default selection, reason, path, date, size and Finder reveal action. A fixed footer keeps the selected count and the review action visible while the content scrolls. The confirmation names the selected items and explains Trash behavior. Settings changes have their own confirmation. Cleanup previews use a fictional example user and files; only the scroll container is omitted for offscreen rendering, while the content views remain shared.
-
-Storage opportunities use six SwiftUI category buttons with native keyboard focus and a neutral raised selection rather than a machine-specific drive workflow. Each row identifies the appropriate action: reviewed tool cleanup, native manager, destination picker, or Finder review. Empty categories explain missing tools/data/access; incomplete sizes say “At least” and do not become space-saving promises. Extra scan locations are optional and removable. Runtime last-use information is evidence, while application/editor usage remains unknown. A destination is chosen at the moment of relocation; it is never preselected from the developer’s Mac. The new screenshots use only fictional tools, locations and values.
-
-Personal-file review starts on Downloads, with Documents alongside it. A two-row category grid keeps labels legible. Plain-language file explanations make archive ownership and uncertain last-use evidence clear. Each file offers move, reviewed removal and Finder reveal; removal defaults to Keep file. A separate neutral Trash card offers Open Trash and Empty Trash actions; permanent scope appears in the confirmation. The destructive confirmation defaults to Cancel and delegates to Finder.
-
-Keep UI copy focused on names, sizes, useful file context and action results. Omit repeated workflow instructions, scan implementation notes, raw commands and decorative guidance. Settings are collapsed by default. Keep irreversible consequences and storage limitations in the confirmation where they inform the decision.
-
-Free up space is the primary action immediately below disk usage. One click discovers and removes only eligible recreatable data, with an inline progress and result. No setup, scan screen or confirmation is inserted into this action. Review files is secondary and auto-scans on opening. The selected disk controls the readout; cleanup is explicitly labeled Internal storage and targets the user's home.

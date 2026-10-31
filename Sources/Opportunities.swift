@@ -4,18 +4,19 @@ import CryptoKit
 import CoreServices
 
 enum StorageCategory: String, CaseIterable {
-    case downloads, documents, developer, applications, folders
+    case downloads, documents, personal, developer, applications, folders
     var title: String {
         switch self {
         case .developer: return "Developer tools"
         case .downloads: return "Downloads"
         case .documents: return "Documents"
+        case .personal: return "Media & Desktop"
         case .applications: return "Applications"
         case .folders: return "Large folders"
         }
     }
 }
-enum StorageManager: String { case gradle, jetBrains, unity, xcode }
+enum StorageManager: String { case gradle, jetBrains, unity, xcode, steam }
 enum CacheTool: String, Hashable { case npm, homebrew, swift }
 enum StorageAction {
     case relocate
@@ -92,28 +93,27 @@ struct StorageScanner {
     var simulatorInventory: () throws -> Data = { Data("{}".utf8) }
 
     func measure(_ url: URL) -> InventorySize {
+        var root = stat()
+        guard lstat(url.path,&root) == 0 else { return InventorySize(bytes: 0,incomplete: true) }
+        let kind = root.st_mode & UInt16(S_IFMT)
+        if kind == UInt16(S_IFREG) { return InventorySize(bytes: root.st_size,incomplete: false) }
+        guard kind == UInt16(S_IFDIR) else { return InventorySize(bytes: 0,incomplete: true) }
         var bytes: Int64 = 0; var count = 0; var incomplete = false
-        let keys: Set<URLResourceKey> = [.isDirectoryKey,.isRegularFileKey,.isSymbolicLinkKey,.fileSizeKey,.isUbiquitousItemKey]
-        do {
-            let values = try url.resourceValues(forKeys: keys)
-            if values.isSymbolicLink == true { return InventorySize(bytes: 0,incomplete: true) }
-            if values.isRegularFile == true { return InventorySize(bytes: Int64(values.fileSize ?? 0),incomplete: false) }
-            guard values.isDirectory == true else { return InventorySize(bytes: 0,incomplete: true) }
-            guard let walker = FileManager.default.enumerator(at: url,includingPropertiesForKeys: Array(keys),options: [],errorHandler: { _,_ in incomplete = true; return true }) else { return InventorySize(bytes: 0,incomplete: true) }
-            for case let child as URL in walker {
-                count += 1
-                guard count <= maximumEntries,!cancelled() else { incomplete = true; break }
-                do {
-                    let entry = try child.resourceValues(forKeys: keys)
-                    if entry.isSymbolicLink == true { walker.skipDescendants(); continue }
-                    if entry.isRegularFile == true {
-                        let sum = bytes.addingReportingOverflow(Int64(entry.fileSize ?? 0))
-                        guard !sum.overflow else { incomplete = true; break }
-                        bytes = sum.partialValue
-                    }
-                } catch { incomplete = true; walker.skipDescendants() }
+        let deadline = Date().addingTimeInterval(1.5)
+        guard let walker = FileManager.default.enumerator(at: url,includingPropertiesForKeys: nil,options: [],errorHandler: { _,_ in incomplete = true; return true }) else { return InventorySize(bytes: 0,incomplete: true) }
+        for case let child as URL in walker {
+            count += 1
+            guard count <= maximumEntries,!cancelled(),Date() < deadline else { incomplete = true; break }
+            var entry = stat()
+            if lstat(child.path,&entry) != 0 { incomplete = true; walker.skipDescendants(); continue }
+            let type = entry.st_mode & UInt16(S_IFMT)
+            if type == UInt16(S_IFLNK) { walker.skipDescendants(); continue }
+            if type == UInt16(S_IFREG) {
+                let sum = bytes.addingReportingOverflow(entry.st_size)
+                guard !sum.overflow else { incomplete = true; break }
+                bytes = sum.partialValue
             }
-        } catch { incomplete = true }
+        }
         return InventorySize(bytes: bytes,incomplete: incomplete)
     }
     static func simulatorItems(_ data: Data) throws -> [StorageOpportunity] {
@@ -135,6 +135,67 @@ struct StorageScanner {
             if size.incomplete && size.bytes == 0 { result.notes.append("\(name): size unavailable."); return }
             guard size.bytes >= minimum || (size.incomplete && size.bytes > 0) else { return }
             result.items.append(StorageOpportunity(url: url,category: category,name: name,bytes: size.bytes,incomplete: size.incomplete,explanation: explanation,action: action))
+        }
+        let fileKeys: Set<URLResourceKey> = [.isRegularFileKey,.isDirectoryKey,.isSymbolicLinkKey,.isPackageKey,.fileSizeKey,.creationDateKey,.contentModificationDateKey,.isUbiquitousItemKey,.ubiquitousItemDownloadingStatusKey]
+        func inspectFile(_ file: URL,category: StorageCategory,includeOlder: Bool = false) throws {
+            let values = try file.resourceValues(forKeys: fileKeys)
+            guard values.isRegularFile == true,values.isSymbolicLink != true else { return }
+            // Inventory must not materialize online-only iCloud documents or offer them for relocation.
+            if values.isUbiquitousItem == true && values.ubiquitousItemDownloadingStatus != .current { return }
+            let bytes = Int64(values.fileSize ?? 0)
+            let minimum = category == .documents ? minimumDocumentBytes : minimumLargeBytes
+            guard bytes >= minimum || ((category == .downloads || includeOlder) && bytes >= minimumOldDownloadBytes) else { return }
+            let dates = [values.creationDate,values.contentModificationDate].compactMap { $0 }
+            // Finder's last-used metadata is optional. Missing evidence never means unused.
+            let used = (category == .downloads || includeOlder) ? lastUsed(file) : nil
+            let latest = (dates + [used].compactMap { $0 }).max()
+            let old = (category == .downloads || includeOlder) && dates.count == 2 && latest.map { $0 < now.addingTimeInterval(-90 * 86400) } == true
+            guard bytes >= minimum || (old && bytes >= minimumOldDownloadBytes) else { return }
+            let kind: String
+            switch file.pathExtension.lowercased() {
+            case "dmg","pkg": kind = "Installer."
+            case "zip","rar","7z","tar","gz": kind = "Archive. May be your only copy."
+            case "mp4","mov","mkv","avi","m4v": kind = "Video."
+            default: kind = "Personal file."
+            }
+            var explanation = kind
+            if old {
+                explanation += " Over 90 days old." + (used == nil ? " Last opened is unknown." : " No recorded opening in the last 90 days.")
+            }
+            let stamp = try? CleanupStamp.read(file)
+            result.items.append(StorageOpportunity(url: file,category: category,name: file.lastPathComponent,bytes: bytes,incomplete: false,explanation: explanation,action: stamp == nil ? .reveal : .relocate,sourceStamp: stamp))
+        }
+        var seenRoots: Set<String> = []
+        for root in ["Downloads","Documents","Desktop","Movies","Music","Pictures"].map({ home.appendingPathComponent($0) }) + additionalRoots {
+            guard seenRoots.insert(root.standardizedFileURL.path).inserted,!cancelled(),fm.fileExists(atPath: root.path) else { continue }
+            do {
+                let entries = try fm.contentsOfDirectory(at: root,includingPropertiesForKeys: Array(fileKeys),options: [.skipsHiddenFiles])
+                for file in entries.prefix(maximumEntries) {
+                    guard !cancelled() else { break }
+                    do {
+                        let category: StorageCategory = root.path == home.appendingPathComponent("Documents").path ? .documents : root.path == home.appendingPathComponent("Downloads").path ? .downloads : .personal
+                        try inspectFile(file,category: category,includeOlder: additionalRoots.contains { $0.path == root.path })
+                    } catch { result.notes.append("Could not read \(file.lastPathComponent).") }
+                }
+                if entries.count > maximumEntries { result.notes.append("\(root.lastPathComponent): some files weren’t checked.") }
+            } catch { result.notes.append("\(root.lastPathComponent): folder access unavailable.") }
+        }
+        let documents = home.appendingPathComponent("Documents")
+        if fm.fileExists(atPath: documents.path),!cancelled() {
+            var failed = false; var count = 0
+            let documentDeadline = Date().addingTimeInterval(8)
+            if let walker = fm.enumerator(at: documents,includingPropertiesForKeys: Array(fileKeys),options: [.skipsHiddenFiles,.skipsPackageDescendants],errorHandler: { _,_ in failed = true; return true }) {
+                for case let file as URL in walker {
+                    count += 1
+                    guard count <= maximumEntries,!cancelled(),Date() < documentDeadline else { result.notes.append("Documents scan stopped early. Some files may be missing from this list."); break }
+                    do {
+                        let values = try file.resourceValues(forKeys: fileKeys)
+                        if values.isSymbolicLink == true || values.isPackage == true { walker.skipDescendants(); continue }
+                        try inspectFile(file,category: .documents)
+                    } catch { failed = true; walker.skipDescendants() }
+                }
+            } else { failed = true }
+            if failed { result.notes.append("Some Documents folders could not be read. Check access in macOS Privacy & Security.") }
         }
         let cacheLocations: [(String,String,CacheTool,URL?)] = [
             (".npm","npm cache",.npm,tools.npm),
@@ -170,63 +231,6 @@ struct StorageScanner {
             do { result.items += try Self.simulatorItems(simulatorInventory()) }
             catch { result.notes.append("Couldn’t check installed simulators.") }
         }
-        let fileKeys: Set<URLResourceKey> = [.isRegularFileKey,.isDirectoryKey,.isSymbolicLinkKey,.isPackageKey,.fileSizeKey,.creationDateKey,.contentModificationDateKey,.isUbiquitousItemKey,.ubiquitousItemDownloadingStatusKey]
-        func inspectFile(_ file: URL,category: StorageCategory) throws {
-            let values = try file.resourceValues(forKeys: fileKeys)
-            guard values.isRegularFile == true,values.isSymbolicLink != true else { return }
-            // Inventory must not materialize online-only iCloud documents or offer them for relocation.
-            if values.isUbiquitousItem == true && values.ubiquitousItemDownloadingStatus != .current { return }
-            let bytes = Int64(values.fileSize ?? 0)
-            let minimum = category == .documents ? minimumDocumentBytes : minimumLargeBytes
-            guard bytes >= minimum || (category == .downloads && bytes >= minimumOldDownloadBytes) else { return }
-            let dates = [values.creationDate,values.contentModificationDate].compactMap { $0 }
-            // Finder's last-used metadata is optional. Missing evidence never means unused.
-            let used = category == .downloads ? lastUsed(file) : nil
-            let latest = (dates + [used].compactMap { $0 }).max()
-            let old = category == .downloads && dates.count == 2 && latest.map { $0 < now.addingTimeInterval(-90 * 86400) } == true
-            guard bytes >= minimum || (old && bytes >= minimumOldDownloadBytes) else { return }
-            let kind: String
-            switch file.pathExtension.lowercased() {
-            case "dmg","pkg": kind = "Installer."
-            case "zip","rar","7z","tar","gz": kind = "Archive. May be your only copy."
-            case "mp4","mov","mkv","avi","m4v": kind = "Video."
-            default: kind = "Personal file."
-            }
-            var explanation = kind
-            if old {
-                explanation += " Over 90 days old." + (used == nil ? " Last opened is unknown." : " No recorded opening in the last 90 days.") + ""
-            }
-            let stamp = try? CleanupStamp.read(file)
-            result.items.append(StorageOpportunity(url: file,category: category,name: file.lastPathComponent,bytes: bytes,incomplete: false,explanation: explanation,action: stamp == nil ? .reveal : .relocate,sourceStamp: stamp))
-        }
-        var seenRoots: Set<String> = []
-        for root in [home.appendingPathComponent("Downloads")] + additionalRoots {
-            guard seenRoots.insert(root.standardizedFileURL.path).inserted,!cancelled(),fm.fileExists(atPath: root.path) else { continue }
-            do {
-                let entries = try fm.contentsOfDirectory(at: root,includingPropertiesForKeys: Array(fileKeys),options: [.skipsHiddenFiles])
-                for file in entries.prefix(maximumEntries) {
-                    guard !cancelled() else { break }
-                    do { try inspectFile(file,category: .downloads) } catch { result.notes.append("Could not read \(file.lastPathComponent).") }
-                }
-                if entries.count > maximumEntries { result.notes.append("\(root.lastPathComponent): some files weren’t checked.") }
-            } catch { result.notes.append("\(root.lastPathComponent): folder access unavailable.") }
-        }
-        let documents = home.appendingPathComponent("Documents")
-        if fm.fileExists(atPath: documents.path),!cancelled() {
-            var failed = false; var count = 0
-            if let walker = fm.enumerator(at: documents,includingPropertiesForKeys: Array(fileKeys),options: [.skipsHiddenFiles,.skipsPackageDescendants],errorHandler: { _,_ in failed = true; return true }) {
-                for case let file as URL in walker {
-                    count += 1
-                    guard count <= maximumEntries,!cancelled() else { result.notes.append("Documents scan stopped early. Some files may be missing from this list."); break }
-                    do {
-                        let values = try file.resourceValues(forKeys: fileKeys)
-                        if values.isSymbolicLink == true || values.isPackage == true { walker.skipDescendants(); continue }
-                        try inspectFile(file,category: .documents)
-                    } catch { failed = true; walker.skipDescendants() }
-                }
-            } else { failed = true }
-            if failed { result.notes.append("Some Documents folders could not be read. Check access in macOS Privacy & Security.") }
-        }
         for root in applicationRoots + [home.appendingPathComponent("Applications")] + additionalRoots {
             guard !cancelled(),fm.fileExists(atPath: root.path) else { continue }
             if let apps = try? fm.contentsOfDirectory(at: root,includingPropertiesForKeys: nil,options: [.skipsHiddenFiles]) {
@@ -241,6 +245,7 @@ struct StorageScanner {
                 append(entry,.developer,"Unity editor \(entry.lastPathComponent)","Check which version your projects need.",.manager(.unity),minimumCacheBytes)
             }
         }
+        append(home.appendingPathComponent("Library/Application Support/Steam/steamapps"),.folders,"Steam games","Move games through Steam’s Storage settings.",.manager(.steam),minimumLargeBytes)
         let folderRoots = ["Documents","Desktop","Downloads","Movies","Music","Pictures","Library/Application Support","Library/Caches"].map { home.appendingPathComponent($0) } + additionalRoots
         var seenFolders: Set<String> = []
         for root in folderRoots {
@@ -330,7 +335,7 @@ enum StorageFailure: Error, LocalizedError {
         case .collision: return "A file with this name already exists at the destination. Nothing was overwritten."
         case .insufficientSpace: return "There isn’t enough space at the destination."
         case .timeout: return "The tool exceeded its time limit. Review its state before retrying."
-        case .copyKept(let path): return "Verified copy kept at \(path). The original could not be moved to Trash and remains in place."
+        case .copyKept(let path): return "Verified copy kept at \(path). The original could not be removed and remains in place."
         }
     }
 }
@@ -357,6 +362,7 @@ enum ReviewedFile {
     }
 }
 struct FileRelocator {
+    var progress: (Int64,Int64) -> Void = { _,_ in }
     let allowedRoots: [URL]
     var freeBytes: (URL) throws -> Int64 = { try DiskReading.read(path: $0.path).free }
     var cancelled: () -> Bool = { false }
@@ -396,15 +402,18 @@ struct FileRelocator {
         while let chunk = try reader.read(upToCount: 4 * 1024 * 1024),!chunk.isEmpty {
             guard !cancelled() else { throw StorageFailure.changed }
             hash.update(data: chunk); copied += Int64(chunk.count)
+            progress(copied,stamp.size * 2)
         }
         let verificationFD = open(temporary.path,O_RDONLY | O_NOFOLLOW)
         guard verificationFD >= 0 else { throw StorageFailure.changed }
         let verification = FileHandle(fileDescriptor: verificationFD,closeOnDealloc: true); defer { try? verification.close() }
-        var verifiedHash = SHA256()
+        var verifiedHash = SHA256(); var checked: Int64 = 0
         while let chunk = try verification.read(upToCount: 4 * 1024 * 1024),!chunk.isEmpty {
             guard !cancelled() else { throw StorageFailure.changed }
-            verifiedHash.update(data: chunk)
+            verifiedHash.update(data: chunk); checked += Int64(chunk.count)
+            progress(stamp.size + checked,stamp.size * 2)
         }
+        guard fsync(verificationFD) == 0 else { throw NSError(domain: NSPOSIXErrorDomain,code: Int(errno)) }
         var freshParent = stat()
         guard copied == stamp.size,hash.finalize() == verifiedHash.finalize(),try CleanupStamp.read(source) == stamp,lstat(destinationFolder.path,&freshParent) == 0,freshParent.st_ino == parent.st_ino,freshParent.st_dev == parent.st_dev else { throw StorageFailure.changed }
         guard !FileManager.default.fileExists(atPath: target.path) else { throw StorageFailure.collision }
@@ -413,7 +422,7 @@ struct FileRelocator {
             throw NSError(domain: NSPOSIXErrorDomain,code: Int(errno))
         }
         promoted = true
-        do { guard try CleanupStamp.read(source) == stamp else { throw StorageFailure.changed }; try trash(source) }
+        do { guard try CleanupStamp.read(target).size == stamp.size,try CleanupStamp.read(source) == stamp else { throw StorageFailure.changed }; try trash(source) }
         catch { throw StorageFailure.copyKept(target.path) }
         return RelocationResult(destination: target,sameVolume: parent.st_dev == stamp.device)
     }

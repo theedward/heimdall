@@ -2,6 +2,7 @@ import AppKit
 import SwiftUI
 import Darwin
 import UserNotifications
+import Combine
 
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate, NSWindowDelegate {
     private var status: NSStatusItem!
@@ -14,6 +15,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var baselineAlerts = true
     private var cleanupWindow: NSWindow?
     private let cleanupModel = CleanupModel()
+    private let hub = StorageHubModel()
+    private var lastRecommendationScan: Date?
+    private var journalHealthy = true
+    private var hubObservation: AnyCancellable?
+    private var moveStore: MoveStore { MoveStore(url: FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath().appendingPathComponent("Library/Application Support/Heimdall/moves.json")) }
     private var cleanupCancellation: CleanupCancellation?
     private var cleanupGeneration = UUID()
     private var updateSession: URLSession?
@@ -33,7 +39,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         status.button?.action = #selector(togglePanel)
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 360, height: 615)
-        model.refreshAction = { [weak self] in self?.refresh() }
+        model.refreshAction = { [weak self] in self?.refresh(); self?.scanCleanup() }
         model.presetAction = { [weak self] warn, crit in
             self?.defaults.set(warn, forKey: "warningGB")
             self?.defaults.set(crit, forKey: "criticalGB")
@@ -56,9 +62,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         model.testAlertAction = { [weak self] in self?.configureAlerts(true,test: true) }
         model.updateAction = { [weak self] in self?.checkUpdates() }
         model.openReleaseAction = { [weak self] in if let url = self?.model.releaseURL { NSWorkspace.shared.open(url) } }
+        configureStorageHub()
         model.freeSpaceAction = { [weak self] in self?.freeUpSpace() }
         model.cleanupAction = { [weak self] in self?.showCleanup() }
-        model.quitAction = { [weak self] in if self?.model.cleaning != true { NSApplication.shared.terminate(nil) } }
+        model.quitAction = { [weak self] in if self?.model.cleaning != true && self?.hub.busy != true { NSApplication.shared.terminate(nil) } }
         let panelHeight = min(CGFloat(850),(NSScreen.main?.visibleFrame.height ?? 900) - 80)
         let hosting = NSHostingController(rootView: ScrollView { BeaconPanel(model: model) }.frame(width: 360,height: panelHeight))
         popover.contentViewController = hosting
@@ -66,6 +73,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let height = hosting.view.fittingSize.height
         if height > 0 { popover.contentSize = NSSize(width: 360,height: ceil(height)) }
         refresh()
+        DispatchQueue.main.asyncAfter(deadline: .now() + 3) { [weak self] in self?.scanCleanup() }
         syncNotificationPermission()
         if defaults.object(forKey: "alertsEnabled") == nil { configureAlerts(true) }
         timer = Timer.scheduledTimer(withTimeInterval: 30, repeats: true) { [weak self] _ in self?.refresh() }
@@ -79,6 +87,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         guard let button = status.button else { return }
         if popover.isShown { popover.performClose(nil) } else {
             refresh()
+            if lastRecommendationScan == nil || Date().timeIntervalSince(lastRecommendationScan!) > 900 { scanCleanup() }
             syncNotificationPermission()
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             popover.contentViewController?.view.window?.makeKey()
@@ -95,7 +104,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let level = tracker.sample(id: target.id,freeGB: Double(reading.free) / 1e9,warning: model.warning,critical: model.critical,baseline: baselineAlerts || !activeDisks.contains(target.id) || !model.alerts)
             if model.alerts,let level { sendAlert(target: target,reading: reading,level: level) }
         }
+        let mountsChanged = !activeDisks.isEmpty && activeDisks != present
         activeDisks = present; baselineAlerts = false
+        if !hub.busy && !cleanupModel.busy && (mountsChanged || lastRecommendationScan.map { Date().timeIntervalSince($0) > 900 } == true) { scanCleanup() }
         if let saved = try? JSONEncoder().encode(tracker) { defaults.set(saved,forKey: "alertTracker") }
         model.disconnected = !present.contains(model.selectedID)
         do {
@@ -190,10 +201,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }.resume()
     }
     private func freeUpSpace() {
-        guard !model.cleaning,!cleanupModel.busy else { return }
+        guard !model.cleaning,!cleanupModel.busy,!hub.busy else { return }
         cleanupCancellation?.cancel(); cleanupGeneration = UUID()
         cleanupModel.scanning = false; cleanupModel.working = true
-        model.cleaning = true; model.cleanNote = ""
+        model.cleaning = true; model.cleanNote = ""; hub.busy = true; hub.message = "Freeing up space…"; hub.notice = nil
         let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
         let before = try? DiskReading.read(path: home.path).free
         DispatchQueue.global(qos: .utility).async { [weak self] in
@@ -211,7 +222,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             let after = try? DiskReading.read(path: home.path).free
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.model.cleaning = false; self.cleanupModel.working = false
+                self.model.cleaning = false; self.cleanupModel.working = false; self.hub.busy = false
                 let bytes = ByteCountFormatter.string(fromByteCount: result.removedBytes,countStyle: .file)
                 if result.removedCount > 0 {
                     if let before,let after,after > before {
@@ -226,7 +237,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self.cleanupModel.status = self.model.cleanNote
                 // Invalidate review snapshots affected by this run.
                 self.cleanupModel.candidates = []; self.cleanupModel.opportunities = []; self.cleanupModel.selection = []; self.cleanupModel.scanned = false
-                self.refresh()
+                self.hub.message = self.model.cleanNote; self.hub.notice = self.model.cleanNote
+                self.refresh(); self.scanCleanup()
             }
         }
     }
@@ -252,28 +264,29 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         cleanupModel.closeAction = { [weak self] in self?.cleanupWindow?.performClose(nil) }
         if cleanupWindow == nil {
             let height = min(CGFloat(800),(NSScreen.main?.visibleFrame.height ?? 900) - 80)
-            let window = NSWindow(contentRect: NSRect(x: 0,y: 0,width: 720,height: height),styleMask: [.titled,.closable,.miniaturizable,.resizable],backing: .buffered,defer: false)
-            window.title = "Heimdall — Cleanup review"; window.isReleasedWhenClosed = false
-            window.contentMinSize = NSSize(width: 620,height: 500)
-            window.contentViewController = NSHostingController(rootView: CleanupPanel(model: cleanupModel))
+            let window = NSWindow(contentRect: NSRect(x: 0,y: 0,width: 960,height: height),styleMask: [.titled,.closable,.miniaturizable,.resizable],backing: .buffered,defer: false)
+            window.title = "Heimdall — Make room"; window.isReleasedWhenClosed = false
+            window.contentMinSize = NSSize(width: 900,height: 540)
+            window.contentViewController = NSHostingController(rootView: StorageHub(hub: hub,cleanup: cleanupModel,beacon: model))
             window.delegate = self; window.center(); cleanupWindow = window
         }
         NSApp.activate(ignoringOtherApps: true)
         cleanupWindow?.makeKeyAndOrderFront(nil)
         if !cleanupModel.scanned && !cleanupModel.busy { scanCleanup() }
     }
-    func windowShouldClose(_ sender: NSWindow) -> Bool { !cleanupModel.working }
+    func windowShouldClose(_ sender: NSWindow) -> Bool { !cleanupModel.working && !hub.busy }
     func windowWillClose(_ notification: Notification) {
-        cleanupCancellation?.cancel(); cleanupGeneration = UUID(); cleanupModel.scanning = false
         cleanupWindow = nil
     }
     private func scanCleanup() {
-        guard !cleanupModel.busy else { return }
+        guard !cleanupModel.busy,!hub.busy else { return }
+        if let _ = hub.sheet { return }
         cleanupCancellation?.cancel()
         let token = CleanupCancellation(); cleanupCancellation = token
         let generation = UUID(); cleanupGeneration = generation
-        cleanupModel.scanning = true; cleanupModel.selection = []; cleanupModel.candidates = []; cleanupModel.opportunities = []; cleanupModel.notes = []
+        cleanupModel.scanning = true; cleanupModel.selection = []
         cleanupModel.status = "Scanning…"; cleanupModel.scanned = false
+        hub.scanning = true; model.discovering = true
         let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
         let xcodeBusy = NSWorkspace.shared.runningApplications.contains { $0.bundleIdentifier == "com.apple.dt.Xcode" }
         let additionalRoots = cleanupModel.additionalRoots
@@ -301,6 +314,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 guard output.status == 0,!output.truncated else { throw CleanupFailure.unsupported }
                 return Data(output.text.utf8)
             }
+            let topology = StorageDestination.discover(home: home,cancelled: scanner.cancelled)
+            let trash = TrashEstimate.scan(home: home,destinations: topology.1,cancelled: scanner.cancelled)
             let inventory = scanner.scan()
             result.notes += inventory.notes
             if Date() > deadline { result.notes.append("Some locations weren’t fully checked.") }
@@ -309,6 +324,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 self.cleanupModel.scanning = false; self.cleanupModel.scanned = true
                 self.cleanupModel.candidates = result.candidates; self.cleanupModel.opportunities = inventory.items; self.cleanupModel.notes = result.notes
                 self.cleanupModel.status = "\(result.candidates.count) cleanup items · \(inventory.items.count) files and folders"
+                self.hub.destinations = topology.1; self.hub.sourceGroup = topology.0; self.hub.trash = trash
+                self.hub.scanning = false; self.hub.scanned = true; self.model.discovering = false
+                self.hub.lastScan = Date(); self.lastRecommendationScan = Date()
+                self.publishRecommendations()
                 self.syncCleanupSettings()
             }
         }
@@ -322,7 +341,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for url in picker.urls {
             if !cleanupModel.additionalRoots.contains(where: { $0.path == url.path }) { cleanupModel.additionalRoots.append(url) }
         }
-        cleanupModel.status = "Locations added. Scan again to include them."
+        scanCleanup()
     }
     private func actOnOpportunity(_ item: StorageOpportunity) {
         guard !cleanupModel.busy else { return }
@@ -337,8 +356,10 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             case .unity: bundle = "com.unity3d.unityhub"; documentation = "https://docs.unity.com/en-us/hub/add-editor"
             case .xcode: bundle = "com.apple.dt.Xcode"; documentation = "https://developer.apple.com/documentation/xcode/downloading-and-installing-additional-xcode-components"
             case .jetBrains: bundle = "com.jetbrains.toolbox"; documentation = "https://www.jetbrains.com/help/idea/directories-used-by-the-ide-to-store-settings-caches-plugins-and-logs.html"
+            case .steam: bundle = "com.valvesoftware.steam"; documentation = "https://help.steampowered.com/en/faqs/view/4BD4-4528-6B2E-8327"
             case .gradle: bundle = nil; documentation = "https://docs.gradle.org/current/userguide/directory_layout.html"
             }
+            if manager == .steam,let url = URL(string: "steam://open/settings/storage") { NSWorkspace.shared.open(url); return }
             let alert = NSAlert(); alert.messageText = "Review in the component’s manager"
             alert.informativeText = item.explanation
             alert.addButton(withTitle: bundle.flatMap { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) } == nil ? "Open guide" : "Open manager")
@@ -359,6 +380,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
         guard let command = plan.command() else { return }
         cleanupModel.working = true; cleanupModel.status = "Preparing cleanup…"
+        hub.busy = true; hub.message = "Preparing cleanup…"
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var preview = "This tool does not provide a dry-run. You are reviewing a purge of the named recreatable cache."
             do {
@@ -370,27 +392,19 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 let text = preview
                 DispatchQueue.main.async {
                     guard let self else { return }
-                    let alert = NSAlert(); alert.messageText = "Run \(kind.rawValue) cleanup?"
-                    alert.informativeText = plan.explanation + "\n\nClose active builds and installs first.\n\n" + item.url.path
-                    if kind == .homebrew {
-                        let scroll = NSScrollView(frame: NSRect(x: 0,y: 0,width: 560,height: 210)); scroll.hasVerticalScroller = true
-                        let view = NSTextView(frame: scroll.bounds); view.isEditable = false; view.isSelectable = true; view.font = .monospacedSystemFont(ofSize: 11,weight: .regular); view.string = text
-                        scroll.documentView = view; alert.accessoryView = scroll
-                    }
-                    alert.addButton(withTitle: "Run cleanup"); alert.addButton(withTitle: "Cancel")
-                    guard alert.runModal() == .alertFirstButtonReturn else { self.cleanupModel.working = false; self.cleanupModel.status = "Cleanup cancelled."; return }
-                    self.runToolCleanup(command,cache: item.url,stamp: rootStamp,plan: plan,expectedDryRun: kind == .homebrew ? text : nil)
+                    self.cleanupModel.working = false; self.hub.busy = false
+                    self.hub.sheet = .tool(item,kind,command,rootStamp,kind == .homebrew ? text : nil)
                 }
             } catch {
-                DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.notes = ["Couldn’t prepare the cleanup preview: \(error.localizedDescription). No cleanup was run."] }
+                DispatchQueue.main.async { self?.cleanupModel.working = false; self?.hub.busy = false; self?.hub.message = "Couldn’t prepare cleanup."; self?.cleanupModel.notes = ["Couldn’t prepare the cleanup preview: \(error.localizedDescription). No cleanup was run."] }
             }
         }
     }
     private func runToolCleanup(_ command: ToolCommand,cache: URL,stamp: CleanupStamp,plan: ToolCleanupPlan,expectedDryRun: String?) {
         if plan.tool == .swift && NSWorkspace.shared.runningApplications.contains(where: { $0.bundleIdentifier == "com.apple.dt.Xcode" }) {
-            cleanupModel.working = false; cleanupModel.notes = ["Xcode started during review. Close it before purging Swift package caches."]; return
+            cleanupModel.working = false; hub.busy = false; hub.message = "Close Xcode before cleaning this cache."; cleanupModel.notes = ["Xcode started during review. Close it before purging Swift package caches."]; return
         }
-        cleanupModel.status = "Cleaning cache…"
+        cleanupModel.status = "Cleaning cache…"; hub.message = "Cleaning cache…"
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var message: String
             do {
@@ -405,37 +419,17 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                 message = result.status == 0 ? "Cache cleanup finished." : "Cleanup couldn’t finish. Some items may have been removed; scan again before retrying."
             } catch { message = "Tool cleanup failed: \(error.localizedDescription). Check the tool’s state and scan again before retrying." }
             let resultMessage = message
-            DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.status = resultMessage; self?.refresh() }
+            DispatchQueue.main.async { self?.cleanupModel.working = false; self?.hub.busy = false; self?.hub.message = resultMessage; self?.hub.notice = resultMessage; self?.cleanupModel.status = resultMessage; self?.refresh(); self?.scanCleanup() }
         }
     }
     private func reviewRelocation(_ item: StorageOpportunity) {
-        let picker = NSOpenPanel(); picker.canChooseFiles = false; picker.canChooseDirectories = true; picker.allowsMultipleSelection = false
-        picker.message = "Choose a destination for \(item.name). It may be on any accessible volume. Existing files will not be overwritten."; picker.prompt = "Choose destination"
-        guard picker.runModal() == .OK,let folder = picker.url else { return }
-        let sameVolume = FileRelocator.isSameVolume(item,destination: folder) == true
-        let alert = NSAlert(); alert.messageText = "Move \(item.name)?"
-        alert.informativeText = "From: \(item.url.path)\nTo: \(folder.path)\n\nThe original will stay in Trash until you empty it. " + (sameVolume ? "Both locations are on the same disk, so this move won’t free space." : "Space is freed after you empty the original’s Trash, provided these disks don’t share storage.")
-        alert.addButton(withTitle: "Move file"); alert.addButton(withTitle: "Cancel")
-        guard alert.runModal() == .alertFirstButtonReturn else { return }
-        cleanupModel.working = true; cleanupModel.status = "Moving \(item.name)…"
-        let roots = reviewedFileRoots
-        DispatchQueue.global(qos: .utility).async { [weak self] in
-            do {
-                let result = try FileRelocator(allowedRoots: roots).relocate(item,to: folder) { try FileManager.default.trashItem(at: $0,resultingItemURL: nil) }
-                DispatchQueue.main.async {
-                    guard let self else { return }
-                    self.cleanupModel.working = false
-                    self.cleanupModel.opportunities.removeAll { $0.url.path == item.url.path }
-                    self.cleanupModel.candidates.removeAll { $0.url.path == item.url.path }; self.cleanupModel.selection.remove(item.url.path)
-                    self.cleanupModel.status = "Moved to \(result.destination.path). Original is in Trash."
-                    self.refresh()
-                }
-            } catch { DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.notes = [error.localizedDescription] } }
-        }
+        hub.destinationID = hub.destinations(for: item).first?.id ?? ""
+        showCleanup()
+        hub.sheet = .move(item)
     }
     private var reviewedFileRoots: [URL] {
         let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
-        return [home.appendingPathComponent("Downloads"),home.appendingPathComponent("Documents")] + cleanupModel.additionalRoots
+        return ["Downloads","Documents","Desktop","Movies","Music","Pictures"].map { home.appendingPathComponent($0) } + cleanupModel.additionalRoots
     }
     private func reviewFileRemoval(_ item: StorageOpportunity) {
         guard !cleanupModel.busy else { return }
@@ -450,7 +444,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             cleanupModel.candidates.removeAll { $0.url.path == item.url.path }; cleanupModel.selection.remove(item.url.path)
             cleanupModel.status = "Moved \(item.name) to Trash."
         } catch { cleanupModel.notes = [error.localizedDescription] }
-        refresh()
+        hub.notice = cleanupModel.status
+        refresh(); scanCleanup()
     }
     private func reviewEmptyTrash() {
         guard !cleanupModel.busy else { return }
@@ -463,7 +458,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
     private func finderTrash(empty: Bool) {
         guard !cleanupModel.busy else { return }
-        cleanupModel.working = true
+        cleanupModel.working = true; hub.busy = true
+        hub.message = empty ? "Emptying Trash…" : "Opening Trash…"
         cleanupModel.status = empty ? "Emptying Trash…" : "Opening Trash…"
         // A fixed Finder command; no file paths or user text are evaluated as script.
         let script = empty ? "tell application \"Finder\" to empty trash" : "tell application \"Finder\"\nactivate\nopen trash\nend tell"
@@ -477,7 +473,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
                     message = "Finder couldn’t complete the request. Check Trash in Finder. If access was denied, allow Heimdall in System Settings → Privacy & Security → Automation."
                 }
             } catch { message = "Finder’s result could not be confirmed. Check Trash in Finder before retrying: " + error.localizedDescription }
-            DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.status = message; self?.refresh() }
+            DispatchQueue.main.async { self?.cleanupModel.working = false; self?.cleanupModel.status = message; self?.hub.busy = false; self?.hub.message = message; self?.hub.notice = message; self?.refresh(); self?.scanCleanup() }
         }
     }
     private func reviewTrash() {
@@ -487,7 +483,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         alert.informativeText = "\(CleanupModel.size(cleanupModel.selectedBytes)). You can restore these items from Trash until Trash is emptied.\n\n" + selected.prefix(8).map { $0.url.path }.joined(separator: "\n") + (selected.count > 8 ? "\n…and \(selected.count - 8) more selected items from your review list." : "")
         alert.addButton(withTitle: "Move to Trash"); alert.addButton(withTitle: "Cancel")
         guard alert.runModal() == .alertFirstButtonReturn else { return }
-        cleanupModel.working = true; cleanupModel.status = "Moving selected items…"
+        cleanupModel.working = true; cleanupModel.status = "Moving selected items…"; hub.busy = true; hub.message = "Moving selected items…"
         let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
         DispatchQueue.global(qos: .utility).async { [weak self] in
             var engine = CleanupEngine(home: home)
@@ -502,12 +498,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
             DispatchQueue.main.async {
                 guard let self else { return }
-                self.cleanupModel.working = false
+                self.cleanupModel.working = false; self.hub.busy = false
+                self.hub.message = "Moved \(moved.count) installers to Trash."; self.hub.notice = self.hub.message
                 self.cleanupModel.candidates.removeAll { moved.contains($0.id) }
                 self.cleanupModel.selection = []
                 self.cleanupModel.notes = failures
                 self.cleanupModel.status = "Moved \(moved.count) items to Trash. \(failures.count) skipped."
-                self.refresh()
+                self.refresh(); self.scanCleanup()
             }
         }
     }
@@ -552,6 +549,21 @@ if let index = CommandLine.arguments.firstIndex(of: "--render"), CommandLine.arg
     MainActor.assumeIsolated { renderPreviews(to: CommandLine.arguments[index + 1]) }
 } else if CommandLine.arguments.contains("--list-disks") {
     print(DiskTarget.available().map { "\($0.name) | \($0.id) | \($0.path)" }.joined(separator: "\n"))
+} else if CommandLine.arguments.contains("--recommendations-check") {
+    let home = FileManager.default.homeDirectoryForCurrentUser.resolvingSymlinksInPath()
+    let deadline = Date().addingTimeInterval(60)
+    let cancelled = { Date() > deadline }
+    var engine = CleanupEngine(home: home); engine.cancelled = cancelled
+    let candidates = engine.scan()
+    var scanner = StorageScanner(home: home); scanner.cancelled = cancelled
+    scanner.tools = ToolDiscovery.detect(home: home)
+    let topology = StorageDestination.discover(home: home,cancelled: cancelled)
+    let trash = TrashEstimate.scan(home: home,destinations: topology.1,cancelled: cancelled)
+    let inventory = scanner.scan()
+    var homeInfo = stat(); _ = stat(home.path,&homeInfo)
+    let suggestions = RecommendationBuilder(sourceGroup: topology.0,destinations: topology.1,choices: [],sourceDevice: homeInfo.st_dev).build(candidates: candidates.candidates,items: inventory.items,trashBytes: trash.bytes,trashIncomplete: trash.incomplete)
+    let output: [String: Any] = ["readOnly":true,"sourceStorageKnown":topology.0 != nil,"destinations":topology.1.count,"cleanupCandidates":candidates.candidates.count,"inventoryItems":inventory.items.count,"recommendations":suggestions.map { ["kind":$0.kind.rawValue,"effort":$0.effort.rawValue,"bytes":$0.bytes as Any] },"notes":inventory.notes.count + candidates.notes.count,"incomplete":cancelled()]
+    if let data = try? JSONSerialization.data(withJSONObject: output,options: [.prettyPrinted]),let text = String(data: data,encoding: .utf8) { print(text) }
 } else if CommandLine.arguments.contains("--check") {
     do {
         let disk = try DiskReading.read()
@@ -564,4 +576,150 @@ if let index = CommandLine.arguments.firstIndex(of: "--render"), CommandLine.arg
     app.delegate = delegate
     app.setActivationPolicy(.accessory)
     app.run()
+}
+
+extension AppDelegate {
+    private func configureStorageHub() {
+        if let data = defaults.data(forKey: "suggestionChoices"),let saved = try? JSONDecoder().decode([SuggestionChoice].self,from: data) { hub.choices = saved }
+        do { hub.moves = try moveStore.load() }
+        catch { journalHealthy = false; hub.message = "Move history couldn’t be opened. Moving files is unavailable." }
+        model.hub = hub
+        hubObservation = hub.objectWillChange.receive(on: DispatchQueue.main).sink { [weak self] _ in self?.model.objectWillChange.send() }
+        model.preferencesAction = { [weak self] in self?.showCleanup(); self?.hub.page = "preferences" }
+        hub.refreshAction = { [weak self] in self?.scanCleanup() }
+        hub.cleanAction = { [weak self] in self?.freeUpSpace() }
+        hub.action = { [weak self] rec in self?.actOnRecommendation(rec) }
+        hub.remember = { [weak self] rec,decision in
+            guard let self else { return }
+            self.hub.choices.removeAll { $0.key == rec.id }
+            self.hub.choices.append(SuggestionChoice(key: rec.id,name: rec.item?.name ?? rec.title,decision: decision))
+            self.saveChoices(); self.publishRecommendations()
+        }
+        hub.restoreChoice = { [weak self] key in
+            guard let self else { return }
+            self.hub.choices.removeAll { $0.key == key }; self.saveChoices(); self.publishRecommendations()
+        }
+        hub.runTool = { [weak self] command,cache,stamp,plan,preview in
+            guard let self,!self.hub.busy,!self.cleanupModel.busy else { return }
+            self.hub.busy = true; self.cleanupModel.working = true
+            self.runToolCleanup(command,cache: cache,stamp: stamp,plan: plan,expectedDryRun: preview)
+        }
+        hub.confirmMove = { [weak self] item,id in self?.performRecommendedMove(item,destinationID: id) }
+        hub.undoMove = { [weak self] record in self?.moveBack(record) }
+        hub.openTrash = { [weak self] in self?.finderTrash(empty: false) }
+        hub.emptyTrash = { [weak self] in self?.finderTrash(empty: true) }
+    }
+    private func saveChoices() {
+        if let data = try? JSONEncoder().encode(hub.choices) { defaults.set(data,forKey: "suggestionChoices") }
+    }
+    private func publishRecommendations() {
+        var homeInfo = stat(); _ = stat(FileManager.default.homeDirectoryForCurrentUser.path,&homeInfo)
+        let builder = RecommendationBuilder(sourceGroup: hub.sourceGroup,destinations: hub.destinations,choices: hub.choices,sourceDevice: homeInfo.st_dev)
+        hub.recommendations = builder.build(candidates: cleanupModel.candidates,items: cleanupModel.opportunities,trashBytes: hub.trash.bytes,trashIncomplete: hub.trash.incomplete)
+        model.recommendations = hub.recommendations
+        if !hub.busy {
+            hub.message = hub.recommendations.isEmpty ? "No new suggestions right now." : "\(hub.recommendations.count) ways to make room"
+        }
+    }
+    private func actOnRecommendation(_ rec: Recommendation) {
+        guard !hub.busy,!cleanupModel.working else { return }
+        switch rec.kind {
+        case .cleanup: freeUpSpace()
+        case .trash: showCleanup(); hub.sheet = .trash
+        case .installers: showCleanup(); cleanupModel.selection = []; hub.sheet = .installers
+        case .move: if let item = rec.item { reviewRelocation(item) }
+        case .manage: if let item = rec.item { showCleanup(); hub.sheet = .file(item) }
+        }
+    }
+    private func performRecommendedMove(_ item: StorageOpportunity,destinationID: String) {
+        guard !hub.busy,!cleanupModel.busy,journalHealthy,
+              let disk = hub.destinations.first(where: { $0.id == destinationID }),disk.fits(item.bytes ?? 0,sourceGroup: hub.sourceGroup) else {
+            hub.message = "Destination unavailable. Refresh suggestions and try again."; hub.notice = hub.message; return
+        }
+        hub.sheet = nil; hub.busy = true; cleanupModel.working = true; hub.progress = 0; hub.notice = nil
+        hub.message = "Moving \(item.name)…"
+        let roots = reviewedFileRoots; let sourceGroup = hub.sourceGroup; let store = moveStore
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            do {
+                // Never recreate a missing mountpoint. The same UUID and storage group must still be online.
+                guard let diskInfo = StorageDestination.diskInfo(disk.root),diskInfo["VolumeUUID"] as? String == disk.id,
+                      StorageDestination.group(diskInfo) == disk.storageGroup,
+                      let liveSource = StorageDestination.diskInfo(item.url),let group = StorageDestination.group(liveSource),group == sourceGroup,group != disk.storageGroup else { throw StorageFailure.invalidDestination }
+                try ReviewedFile.validate(item,roots: roots)
+                let folder = disk.folder(for: item)
+                guard ReviewedFile.canonicalPath(disk.root) == disk.root.path else { throw StorageFailure.invalidDestination }
+                for part in [folder.deletingLastPathComponent(),folder] {
+                    var value = stat()
+                    if lstat(part.path,&value) == 0 {
+                        guard value.st_mode & UInt16(S_IFMT) == UInt16(S_IFDIR),ReviewedFile.canonicalPath(part) == part.path else { throw StorageFailure.invalidDestination }
+                    } else {
+                        guard errno == ENOENT else { throw StorageFailure.invalidDestination }
+                        try FileManager.default.createDirectory(at: part,withIntermediateDirectories: false)
+                    }
+                }
+                var relocator = FileRelocator(allowedRoots: roots)
+                var lastUpdate = Date.distantPast
+                relocator.progress = { completed,total in
+                    guard Date().timeIntervalSince(lastUpdate) > 0.15 || completed == total else { return }; lastUpdate = Date()
+                    DispatchQueue.main.async { self?.hub.progress = total > 0 ? Double(completed) / Double(total) : 0 }
+                }
+                let destination = folder.appendingPathComponent(item.name)
+                let result = try relocator.relocate(item,to: folder) { original in
+                    let record = MoveRecord(id: UUID(),name: item.name,source: original,destination: destination,stamp: try CleanupStamp.read(destination),bytes: item.bytes ?? 0,date: Date())
+                    var records = try store.load(); records.append(record)
+                    // Persist the way back before removing the source, including if the app is interrupted.
+                    try store.save(records)
+                    try FileManager.default.removeItem(at: original)
+                }
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.hub.message = "Moved \(item.name) to \(disk.name)."; self.model.cleanNote = self.hub.message; self.hub.notice = self.hub.message; self.finishMove()
+                    self.cleanupModel.opportunities.removeAll { $0.url.path == item.url.path }
+                    self.hub.moves = (try? store.load()) ?? self.hub.moves
+                    self.hub.recommendations.removeAll { $0.item?.url.path == item.url.path }; self.model.recommendations = self.hub.recommendations
+                    self.refresh(); self.scanCleanup()
+                    NSWorkspace.shared.noteFileSystemChanged(result.destination.path)
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.finishMove(); self.hub.message = error.localizedDescription; self.hub.notice = error.localizedDescription
+                    self.hub.moves = (try? store.load()) ?? self.hub.moves
+                }
+            }
+        }
+    }
+    private func finishMove() {
+        hub.busy = false; cleanupModel.working = false; hub.progress = nil
+    }
+    private func moveBack(_ record: MoveRecord) {
+        guard !hub.busy,!cleanupModel.busy,journalHealthy else { return }
+        let alert = NSAlert(); alert.messageText = "Move \(record.name) back?"
+        alert.informativeText = "Restore to \(shortPath(record.source.deletingLastPathComponent())). This uses \(CleanupModel.size(record.bytes)) on the original disk. The current copy is removed only after verification."
+        alert.addButton(withTitle: "Cancel"); alert.addButton(withTitle: "Move back")
+        guard alert.runModal() == .alertSecondButtonReturn else { return }
+        hub.busy = true; cleanupModel.working = true; hub.progress = 0; hub.message = "Moving \(record.name) back…"
+        let store = moveStore
+        DispatchQueue.global(qos: .utility).async { [weak self] in
+            do {
+                guard try CleanupStamp.read(record.destination) == record.stamp else { throw StorageFailure.changed }
+                let originalParent = record.source.deletingLastPathComponent()
+                guard ReviewedFile.canonicalPath(originalParent) == originalParent.path,FileManager.default.fileExists(atPath: originalParent.path),!FileManager.default.fileExists(atPath: record.source.path) else { throw StorageFailure.collision }
+                let item = StorageOpportunity(url: record.destination,category: .downloads,name: record.name,bytes: record.bytes,incomplete: false,explanation: "",action: .relocate,sourceStamp: record.stamp)
+                var relocator = FileRelocator(allowedRoots: [record.destination.deletingLastPathComponent()])
+                var last = Date.distantPast
+                relocator.progress = { completed,total in
+                    guard Date().timeIntervalSince(last) > 0.15 || completed == total else { return }; last = Date()
+                    DispatchQueue.main.async { self?.hub.progress = total > 0 ? Double(completed) / Double(total) : 0 }
+                }
+                _ = try relocator.relocate(item,to: originalParent) { try FileManager.default.removeItem(at: $0) }
+                var records = try store.load(); records.removeAll { $0.id == record.id }; try store.save(records)
+                DispatchQueue.main.async {
+                    guard let self else { return }
+                    self.finishMove(); self.hub.moves = (try? store.load()) ?? self.hub.moves
+                    self.hub.message = "Moved \(record.name) back."; self.model.cleanNote = self.hub.message; self.hub.notice = self.hub.message; self.refresh(); self.scanCleanup()
+                }
+            } catch { DispatchQueue.main.async { self?.finishMove(); self?.hub.message = error.localizedDescription } }
+        }
+    }
 }

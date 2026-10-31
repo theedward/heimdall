@@ -313,3 +313,104 @@ expect(changedAuto.removedCount == 0 && changedAuto.skippedCount == 1,"Revalidat
 autoEngine.cancelled = { true }
 expect(AutomaticCleanup(engine: autoEngine,buildersRunning: { false },remove: { _ in fatalError("Cancelled cleanup must not remove files") }).run().removedCount == 0,"Automatic cleanup honors cancellation")
 print("Passed \(checks) total checks including one-click cleanup, busy tools, personal-data exclusion, stale snapshots and repeat runs.")
+
+// Recommendations are deterministic metadata decisions; no real volumes or files are modified.
+let sourceGroup = "container-primary"
+let targetDisk = StorageDestination(id: "other",name: "Other disk",root: fixture.appendingPathComponent("OtherDisk"),freeBytes: 100_000_000_000,storageGroup: "container-secondary")
+let sameDisk = StorageDestination(id: "same",name: "Shared APFS",root: fixture.appendingPathComponent("Shared"),freeBytes: 100_000_000_000,storageGroup: sourceGroup)
+expect(!sameDisk.fits(1_000_000_000,sourceGroup: sourceGroup),"Shared APFS storage is never a space-saving move destination")
+expect(!targetDisk.fits(1_000_000_000,sourceGroup: nil),"Unknown source storage must not produce a move recommendation")
+expect(!targetDisk.fits(Int64.max,sourceGroup: sourceGroup),"Oversized files cannot overflow destination capacity checks")
+expect(targetDisk.fits(99_744_000_000,sourceGroup: sourceGroup),"Capacity check includes the required free-space margin")
+var fatDisk = targetDisk; fatDisk.maximumFileBytes = 4_294_967_295
+expect(!fatDisk.fits(4_294_967_296,sourceGroup: sourceGroup),"FAT32 destinations reject files over the per-file limit")
+expect(StorageDestination.group(["APFSContainerReference":"disk3","ParentWholeDisk":"disk3s5"]) == "disk3","APFS group uses its shared container identity")
+expect(StorageDestination.isPhysical(["APFSPhysicalStores":[["APFSPhysicalStore":"disk4s2"]]],disks: ["disk0","disk4"]),"External APFS container resolves to a real physical store")
+expect(!StorageDestination.isPhysical(["ParentWholeDisk":"disk9"],disks: ["disk0","disk4"]),"Mounted disk images cannot become migration targets")
+expect(!StorageDestination.isPhysical(["APFSPhysicalStores":[]],disks: ["disk0"]),"Unknown APFS backing store is excluded")
+var bigItem = nestedItem
+bigItem = StorageOpportunity(url: nestedItem.url,category: .documents,name: nestedItem.name,bytes: 24_000_000_000,incomplete: false,explanation: "Video.",action: .relocate,sourceStamp: nestedItem.sourceStamp)
+let hugeApp = StorageOpportunity(url: genericHome.appendingPathComponent("Applications/Huge.app"),category: .applications,name: "Huge app",bytes: 42_000_000_000,incomplete: false,explanation: "Installed application.",action: .reveal)
+let oldInstallerForReview = CleanupCandidate(url: autoInstaller,rule: .installers,bytes: 2_000_000_000,modified: Date(),snapshot: [])
+let cleanForReview = CleanupCandidate(url: autoLog,rule: .logs,bytes: 3_000_000_000,modified: Date(),snapshot: [])
+var planner = RecommendationBuilder(sourceGroup: sourceGroup,destinations: [sameDisk,targetDisk],choices: [])
+var planned = planner.build(candidates: [oldInstallerForReview,cleanForReview],items: [bigItem,hugeApp],trashBytes: 5_000_000_000,trashIncomplete: false)
+expect(planned.first?.kind == .trash && planned[1].kind == .cleanup,"Easy wins rank ahead of larger, less trivial opportunities")
+expect(planned.contains { $0.kind == .move && $0.destination?.id == targetDisk.id },"Planner proposes a specific separate destination with room")
+expect(planned.contains { $0.kind == .manage && $0.item?.name == "Huge app" },"High-value nontrivial app remains recommended")
+expect(planned.first { $0.item?.name == "Huge app" }!.sizeLabel.contains("to review"),"Installed app size is not presented as guaranteed reclaimed space")
+let moveRecommendation = planned.first { $0.kind == .move }!
+planner.choices = [SuggestionChoice(key: moveRecommendation.id,name: bigItem.name,decision: .keepHere)]
+expect(!planner.build(candidates: [],items: [bigItem],trashBytes: 0,trashIncomplete: false).contains { $0.item != nil },"Keep here suppresses the remembered personal-file suggestion")
+let encodedChoices = try JSONEncoder().encode(planner.choices)
+expect((try? JSONDecoder().decode([SuggestionChoice].self,from: encodedChoices))?.first?.decision == .keepHere,"Remembered decisions survive serialization")
+planner.choices = []
+expect(planner.build(candidates: [],items: [bigItem],trashBytes: 0,trashIncomplete: false).contains { $0.kind == .move },"Restoring a hidden suggestion makes it eligible again")
+planner.destinations = []
+expect(!planner.build(candidates: [],items: [bigItem],trashBytes: 0,trashIncomplete: false).contains { $0.kind == .move },"No connected disk never produces an unavailable move action")
+planner.destinations = [targetDisk]; planner.sourceDevice = -1
+expect(!planner.build(candidates: [],items: [bigItem],trashBytes: 0,trashIncomplete: false).contains { $0.kind == .move },"Files scanned on a different source device cannot be sent back to the same storage")
+expect(planner.build(candidates: [],items: [],trashBytes: nil,trashIncomplete: true).first?.bytes == nil,"Inaccessible Trash is offered without an invented size")
+expect(planner.build(candidates: [],items: [],trashBytes: 0,trashIncomplete: false).isEmpty,"A genuinely empty inventory remains empty")
+expect(targetDisk.folder(for: bigItem).lastPathComponent == "Videos","Media moves propose an organized destination folder")
+let recordedItem = try storageFile("Downloads/roundtrip.zip")
+let initialStamp = try CleanupStamp.read(recordedItem)
+let roundtripItem = StorageOpportunity(url: recordedItem,category: .downloads,name: recordedItem.lastPathComponent,bytes: initialStamp.size,incomplete: false,explanation: "Archive",action: .relocate,sourceStamp: initialStamp)
+let moveTarget = fixture.appendingPathComponent("RoundtripDestination")
+try FileManager.default.createDirectory(at: moveTarget,withIntermediateDirectories: true)
+let store = MoveStore(url: fixture.appendingPathComponent("Heimdall/moves.json"))
+var progressValues: [Int64] = []
+var roundtrip = FileRelocator(allowedRoots: [recordedItem.deletingLastPathComponent()],freeBytes: { _ in 10_000_000_000 })
+roundtrip.progress = { completed,_ in progressValues.append(completed) }
+let roundtripResult = try roundtrip.relocate(roundtripItem,to: moveTarget) { original in
+    let target = moveTarget.appendingPathComponent(original.lastPathComponent)
+    let record = MoveRecord(id: UUID(),name: original.lastPathComponent,source: original,destination: target,stamp: try CleanupStamp.read(target),bytes: initialStamp.size,date: Date())
+    try store.save([record])
+    expect((try? store.load().count) == 1,"Move-back record is persisted before deleting the original")
+    try FileManager.default.removeItem(at: original)
+}
+expect(!FileManager.default.fileExists(atPath: recordedItem.path),"Approved verified move releases the original rather than putting it in Trash")
+expect(progressValues.last == initialStamp.size * 2,"Move progress covers both copy and verification")
+let savedMove = try store.load()[0]
+expect(savedMove.destination == roundtripResult.destination && savedMove.stamp == (try? CleanupStamp.read(savedMove.destination)),"Move history preserves the verified destination identity")
+let inverseItem = StorageOpportunity(url: savedMove.destination,category: .downloads,name: savedMove.name,bytes: savedMove.bytes,incomplete: false,explanation: "",action: .relocate,sourceStamp: savedMove.stamp)
+_ = try FileRelocator(allowedRoots: [moveTarget],freeBytes: { _ in 10_000_000_000 }).relocate(inverseItem,to: savedMove.source.deletingLastPathComponent()) { try FileManager.default.removeItem(at: $0) }
+expect((try? Data(contentsOf: savedMove.source)) == Data(repeating: 17,count: 2048),"Move back restores original bytes and location")
+expect(!FileManager.default.fileExists(atPath: savedMove.destination.path),"Move back removes the verified secondary copy after successful restoration")
+try store.save([])
+expect((try? store.load().isEmpty) == true,"Completed move-back record can be removed durably")
+let corruptStore = MoveStore(url: fixture.appendingPathComponent("Heimdall/corrupt.json"))
+try Data("invalid".utf8).write(to: corruptStore.url)
+expect((try? corruptStore.load()) == nil,"Corrupt move history is reported instead of silently overwritten")
+print("Passed \(checks) total checks including recommendation ranking, separate storage, dismissals, Trash uncertainty and durable verified move-back.")
+
+expect(StorageDestination.mountPoint(fixture) != nil,"Disk lookup resolves a directory to its actual mountpoint")
+expect(StorageDestination.mountPoint(fixture.appendingPathComponent("missing-directory")) == nil,"A missing mount cannot silently resolve to the startup disk")
+print("Passed \(checks) total checks.")
+
+let journalFailureSource = try storageFile("Downloads/journal-failure.zip")
+let journalFailureStamp = try CleanupStamp.read(journalFailureSource)
+let journalFailureItem = StorageOpportunity(url: journalFailureSource,category: .downloads,name: journalFailureSource.lastPathComponent,bytes: journalFailureStamp.size,incomplete: false,explanation: "",action: .relocate,sourceStamp: journalFailureStamp)
+let invalidStoreParent = fixture.appendingPathComponent("not-a-directory")
+try Data("fixture".utf8).write(to: invalidStoreParent)
+let invalidStore = MoveStore(url: invalidStoreParent.appendingPathComponent("moves.json"))
+var removalAfterJournal = false
+let failedJournalMove = try? FileRelocator(allowedRoots: [journalFailureSource.deletingLastPathComponent()],freeBytes: { _ in 10_000_000_000 }).relocate(journalFailureItem,to: moveTarget) { original in
+    let destination = moveTarget.appendingPathComponent(original.lastPathComponent)
+    let pending = MoveRecord(id: UUID(),name: original.lastPathComponent,source: original,destination: destination,stamp: try CleanupStamp.read(destination),bytes: journalFailureStamp.size,date: Date())
+    try invalidStore.save([pending])
+    removalAfterJournal = true
+    try FileManager.default.removeItem(at: original)
+}
+expect(failedJournalMove == nil && !removalAfterJournal,"Failure to persist move-back information prevents source deletion")
+expect(FileManager.default.fileExists(atPath: journalFailureSource.path) && FileManager.default.fileExists(atPath: moveTarget.appendingPathComponent(journalFailureSource.lastPathComponent).path),"Both original and verified copy survive journal failure")
+let poisoned = MoveRecord(id: UUID(),name: savedMove.name,source: savedMove.source,destination: savedMove.destination,stamp: initialStamp,bytes: savedMove.bytes,date: Date())
+try store.save([poisoned])
+expect((try? store.load()) == nil,"Move records with mismatched destination identity are rejected")
+print("Passed \(checks) total checks, including journal failure and source-retention guarantees.")
+
+let autoDiscoveredVideo = try storageFile("Movies/personal-video.mov")
+let mediaInventory = inventoryScanner.scan()
+expect(mediaInventory.items.contains { $0.url.path == autoDiscoveredVideo.path && $0.category == .personal },"Media files are discovered automatically without being mislabeled as Downloads")
+expect(targetDisk.folder(for: roundtripItem).lastPathComponent == "Archives","Archive moves use an organized Archives folder")
+print("Passed \(checks) total checks.")

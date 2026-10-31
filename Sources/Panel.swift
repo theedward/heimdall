@@ -15,7 +15,7 @@ final class BeaconModel: ObservableObject {
     @Published var alerts = false
     @Published var alertNote = ""
     @Published var checkingUpdate = false
-    @Published var updateNote = "Version 1.6.0"
+    @Published var updateNote = "Version 2.0.0"
     @Published var releaseURL: URL?
     var selectAction: (String) -> Void = { _ in }
     var alertAction: (Bool) -> Void = { _ in }
@@ -27,6 +27,10 @@ final class BeaconModel: ObservableObject {
     var loginAction: () -> Void = {}
     @Published var cleaning = false
     @Published var cleanNote = ""
+    @Published var recommendations: [Recommendation] = []
+    @Published var discovering = false
+    var hub: StorageHubModel?
+    var preferencesAction: () -> Void = {}
     var freeSpaceAction: () -> Void = {}
     var cleanupAction: () -> Void = {}
     var storageAction: () -> Void = {}
@@ -127,62 +131,36 @@ struct BeaconPanel: View {
                     }
                 }
             }
-            Button(action: model.freeSpaceAction) {
-                HStack {
-                    if model.cleaning { ProgressView().controlSize(.small) }
-                    else { Image(systemName: "sparkles") }
-                    Text(model.cleaning ? "Freeing up space…" : "Free up space")
-                    Spacer()
-                }.font(.system(size: 14,weight: .semibold)).padding(.horizontal,14).frame(height: 46)
-                    .background(surface,in: RoundedRectangle(cornerRadius: 11))
-                    .overlay(RoundedRectangle(cornerRadius: 11).stroke(border,lineWidth: 1))
-            }.buttonStyle(FluidPress()).disabled(model.cleaning)
-                .help("Remove old logs, inactive build data and cached package downloads from this Mac.")
-            if !model.cleanNote.isEmpty {
-                Text(model.cleanNote).font(.system(size: 12)).foregroundStyle(.secondary).fixedSize(horizontal: false,vertical: true)
-            }
             HStack {
-                Button("Review files…",action: model.cleanupAction).disabled(model.cleaning)
+                Text("Make room on this Mac").font(.system(size: 14,weight: .semibold))
                 Spacer()
-                Text("Internal storage").foregroundStyle(.secondary)
-            }.font(.system(size: 11))
-            panel {
-                VStack(alignment: .leading,spacing: 12) {
-                    Text("Warn me when space gets low").font(.system(size: 13,weight: .semibold))
-                    HStack(spacing: 5) {
-                        preset("Relaxed",30,10)
-                        preset("Balanced",60,25)
-                        preset("Early",100,50)
-                    }.padding(4).background(canvas,in: RoundedRectangle(cornerRadius: 11))
-                    HStack(spacing: 6) {
-                        Circle().fill(Color.orange).frame(width: 5,height: 5)
-                        Text("Amber below \(model.warning) GB").font(.system(size: 10))
-                        Spacer(minLength: 3)
-                        Circle().fill(Color.red).frame(width: 5,height: 5)
-                        Text("Red below \(model.critical) GB").font(.system(size: 10))
-                    }.foregroundStyle(.secondary)
-                }
+                if model.discovering { ProgressView().controlSize(.small) }
             }
-            panel {
-                VStack(alignment: .leading,spacing: 8) {
-                    Toggle("Low-space notifications",isOn: Binding(get: { model.alerts },set: model.alertAction))
-                        .font(.system(size: 13,weight: .medium)).toggleStyle(FluidToggle(label: "Low-space notifications"))
-                    if !model.alertNote.isEmpty { Text(model.alertNote).font(.system(size: 10)).foregroundStyle(.secondary).fixedSize(horizontal: false,vertical: true) }
-                    Button("Send test notification",action: model.testAlertAction).font(.system(size: 11)).buttonStyle(.plain)
-                }
+            let easy = model.recommendations.filter { $0.effort == .easy }
+            let worthwhile = model.recommendations.filter { $0.effort == .worthwhile }
+            if !easy.isEmpty {
+                Text("Easy wins").font(.system(size: 10,weight: .semibold)).foregroundStyle(.secondary)
+                ForEach(Array(easy.prefix(2))) { rec in compactRecommendation(rec) }
             }
-            panel {
-                Toggle(isOn: Binding(get: { model.login },set: { _ in model.loginAction() })) {
-                    VStack(alignment: .leading,spacing: 4) {
-                        Text("Launch at login").font(.system(size: 13,weight: .medium))
-                    }
-                }.toggleStyle(FluidToggle())
+            if !worthwhile.isEmpty {
+                Text("Worth considering").font(.system(size: 10,weight: .semibold)).foregroundStyle(.secondary)
+                ForEach(Array(worthwhile.prefix(1))) { rec in compactRecommendation(rec) }
             }
-            Button(action: model.storageAction) {
-                HStack { Image(systemName: "internaldrive"); Text(model.selectedID == "internal" ? "macOS Storage settings" : "Open disk in Finder"); Spacer(); Image(systemName: "arrow.up.right").font(.system(size: 10,weight: .semibold)) }
-                    .font(.system(size: 13,weight: .medium)).padding(.horizontal,14).frame(height: 42)
-                    .background(surface,in: RoundedRectangle(cornerRadius: 11)).overlay(RoundedRectangle(cornerRadius: 11).stroke(border,lineWidth: 1))
-            }.buttonStyle(FluidPress()).disabled(model.disconnected).help(model.selectedID == "internal" ? "Open Apple’s cleanup recommendations and large-file review in Storage settings" : "Browse this disk in Finder")
+            if model.recommendations.isEmpty {
+                Text(model.discovering ? "Finding useful next steps…" : "No new suggestions right now.")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                Button(model.cleaning ? "Cleaning…" : "Free up space",action: model.freeSpaceAction).disabled(model.cleaning || model.discovering)
+            }
+            if let hub = model.hub,hub.busy {
+                Text(hub.message).font(.system(size: 12)).foregroundStyle(.secondary)
+                if let progress = hub.progress { ProgressView(value: progress) }
+            } else if let notice = model.hub?.notice { Text(notice).font(.system(size: 12)).foregroundStyle(.secondary) }
+            else if !model.cleanNote.isEmpty { Text(model.cleanNote).font(.system(size: 12)).foregroundStyle(.secondary) }
+            HStack {
+                Button("All recommendations…",action: model.cleanupAction)
+                Spacer()
+                Button(action: model.preferencesAction) { Image(systemName: "slider.horizontal.3") }.help("Preferences")
+            }.font(.system(size: 12))
             VStack(alignment: .leading,spacing: 6) {
                 HStack {
                     Button(model.checkingUpdate ? "Checking…" : "Check for updates",action: model.updateAction)
@@ -199,6 +177,9 @@ struct BeaconPanel: View {
             }.padding(.horizontal,2)
         }
         .padding(18).frame(width: 360).background(canvas).foregroundStyle(.primary)
+    }
+    private func compactRecommendation(_ rec: Recommendation) -> some View {
+        StorageRecommendationCard(recommendation: rec,compact: true,disabled: model.cleaning || model.discovering || model.hub?.busy == true,action: { model.hub?.action(rec) },remember: { model.hub?.remember(rec,$0) })
     }
     private func preset(_ label: String,_ warn: Int,_ crit: Int) -> some View {
         let selected = model.warning == warn && model.critical == crit
@@ -219,7 +200,7 @@ func renderPreviews(to directory: String) {
         let live = DiskReading(total: 512_000_000_000,free: 128_000_000_000)
         for (name,free) in [("healthy",live.free),("warning",Int64(42_000_000_000)),("critical",Int64(18_000_000_000))] {
             for (theme,scheme) in [("light",ColorScheme.light),("dark",ColorScheme.dark)] {
-                let model = BeaconModel(); model.disk = DiskReading(total: live.total,free: free); model.login = true; model.alerts = true
+                let model = BeaconModel(); model.disk = DiskReading(total: live.total,free: free); model.login = true; model.alerts = true; model.recommendations = exampleRecommendations()
                 let renderer = ImageRenderer(content: BeaconPanel(model: model).environment(\.colorScheme,scheme))
                 renderer.scale = 2
                 guard let image = renderer.cgImage else { throw NSError(domain: "HeimdallRender",code: 1) }
@@ -244,7 +225,7 @@ func renderPreviews(to directory: String) {
         }
         for (theme,scheme) in [("light",ColorScheme.light),("dark",ColorScheme.dark)] {
             let models = [live.free,Int64(42_000_000_000),Int64(18_000_000_000)].map { free -> BeaconModel in
-                let model = BeaconModel(); model.disk = DiskReading(total: live.total,free: free); model.login = true; model.alerts = true; return model
+                let model = BeaconModel(); model.disk = DiskReading(total: live.total,free: free); model.login = true; model.alerts = true; model.recommendations = exampleRecommendations(); return model
             }
             let presentation = VStack(alignment: .leading,spacing: 20) {
                 HStack(alignment: .firstTextBaseline) {
@@ -273,6 +254,7 @@ func renderPreviews(to directory: String) {
             guard let image = renderer.cgImage, let data = NSBitmapImageRep(cgImage: image).representation(using: .png,properties: [:]) else { throw NSError(domain: "HeimdallRender",code: 3) }
             try data.write(to: URL(fileURLWithPath: directory).appendingPathComponent("overview-\(theme).png"))
         }
+        try renderHubPreviews(to: directory)
         try renderCleanupPreviews(to: directory)
         try renderStoragePreviews(to: directory)
         print("Rendered shared app UI to \(directory). All readings use example values.")

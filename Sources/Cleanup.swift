@@ -32,7 +32,7 @@ enum CleanupRule: String, CaseIterable {
     }
 }
 
-struct CleanupStamp: Equatable {
+struct CleanupStamp: Equatable, Codable {
     let path: String
     let inode: UInt64
     let device: Int32
